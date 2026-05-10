@@ -1,0 +1,13 @@
+{
+  "name": "gatherspace-server",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.3",
+    "socket.io": "^4.7.4"
+  }
+}
