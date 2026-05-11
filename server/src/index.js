@@ -2,10 +2,18 @@ const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 app.use(cors());
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// Serve the built Vite client in production
+const clientDist = path.join(__dirname, '../../client/dist');
+app.use(express.static(clientDist));
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(clientDist, 'index.html'));
+});
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {

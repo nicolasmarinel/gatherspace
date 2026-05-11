@@ -1,4 +1,6 @@
-export const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
+// In dev, hit localhost. In prod (single Railway service), use the same origin.
+export const SERVER_URL = import.meta.env.VITE_SERVER_URL ||
+  (import.meta.env.DEV ? 'http://localhost:3000' : window.location.origin);
 
 export const PLAYER_SPEED = 200;
 export const MAP_WIDTH = 2400;

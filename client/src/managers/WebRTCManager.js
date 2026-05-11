@@ -1,8 +1,18 @@
 // Manages proximity-based WebRTC peer connections.
-// Uses free Google STUN servers. For cross-network use, add a TURN server to ICE_SERVERS.
+// STUN handles most cases. The free Open Relay TURN server covers strict-NAT connections
+// (e.g. two friends both behind home routers). Rate-limited but fine for small groups.
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  {
+    urls: [
+      'turn:openrelay.metered.ca:80',
+      'turn:openrelay.metered.ca:443',
+      'turn:openrelay.metered.ca:443?transport=tcp',
+    ],
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
 ];
 
 export class WebRTCManager {
