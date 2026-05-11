@@ -170,7 +170,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   _setupWebRTC() {
-    this.webRTC = new WebRTCManager(this.socket);
+    this.webRTC = new WebRTCManager(this.socket, this.playerName);
   }
 
   // ── camera ────────────────────────────────────────────────────────────────
@@ -251,7 +251,7 @@ export class GameScene extends Phaser.Scene {
 
       if (dist < PROXIMITY_OPEN_DIST) {
         nearby.push(rp.name);
-        this.webRTC?.onNearby(id);
+        this.webRTC?.onNearby(id, rp.name);
         this.webRTC?.setVolume(id, 1 - dist / PROXIMITY_OPEN_DIST);
       } else if (dist > PROXIMITY_CLOSE_DIST) {
         this.webRTC?.closePeer(id);
