@@ -217,7 +217,17 @@ export class GameScene extends Phaser.Scene {
   update(_time, delta) {
     if (!this.localPlayer) return;
 
-    const moved = this.localPlayer.update(this.cursors, this.wasd);
+    // Freeze movement when the user is typing in a chat or settings input
+    const tag = document.activeElement?.tagName;
+    const inputFocused = tag === 'INPUT' || tag === 'TEXTAREA';
+
+    let moved = false;
+    if (inputFocused) {
+      this.localPlayer.sprite.setVelocity(0, 0);
+    } else {
+      moved = this.localPlayer.update(this.cursors, this.wasd);
+    }
+
     if (moved) {
       this.socket?.sendMove(
         this.localPlayer.sprite.x, this.localPlayer.sprite.y,
