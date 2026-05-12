@@ -17,9 +17,11 @@ const ICE_SERVERS = [
 ];
 
 const VIDEO_QUALITIES = {
-  sd:  { label: 'SD  (320×240)',       w: 320,  h: 240  },
-  hd:  { label: 'HD  (1280×720)',      w: 1280, h: 720  },
+  sd:  { label: 'SD  (320×240)',        w: 320,  h: 240  },
+  hd:  { label: 'HD  (1280×720)',       w: 1280, h: 720  },
   fhd: { label: 'Full HD  (1920×1080)', w: 1920, h: 1080 },
+  qhd: { label: '2K  (2560×1440)',      w: 2560, h: 1440 },
+  uhd: { label: '4K  (3840×2160)',      w: 3840, h: 2160 },
 };
 
 const TILE_W = 128;
