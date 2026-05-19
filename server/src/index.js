@@ -54,17 +54,14 @@ io.on('connection', (socket) => {
   });
 
   // WebRTC signaling relay — server is a pure passthrough
-  socket.on('webrtc-offer', ({ targetId, offer }) => {
-    io.to(targetId).emit('webrtc-offer', { fromId: socket.id, offer });
-  });
+  socket.on('webrtc-offer',  ({ targetId, offer })     => io.to(targetId).emit('webrtc-offer',  { fromId: socket.id, offer }));
+  socket.on('webrtc-answer', ({ targetId, answer })    => io.to(targetId).emit('webrtc-answer', { fromId: socket.id, answer }));
+  socket.on('webrtc-ice',    ({ targetId, candidate }) => io.to(targetId).emit('webrtc-ice',    { fromId: socket.id, candidate }));
 
-  socket.on('webrtc-answer', ({ targetId, answer }) => {
-    io.to(targetId).emit('webrtc-answer', { fromId: socket.id, answer });
-  });
-
-  socket.on('webrtc-ice', ({ targetId, candidate }) => {
-    io.to(targetId).emit('webrtc-ice', { fromId: socket.id, candidate });
-  });
+  // Screen-share peer connections use separate signaling events
+  socket.on('screen-offer',  ({ targetId, offer })     => io.to(targetId).emit('screen-offer',  { fromId: socket.id, offer }));
+  socket.on('screen-answer', ({ targetId, answer })    => io.to(targetId).emit('screen-answer', { fromId: socket.id, answer }));
+  socket.on('screen-ice',    ({ targetId, candidate }) => io.to(targetId).emit('screen-ice',    { fromId: socket.id, candidate }));
 
   socket.on('disconnect', () => {
     if (!currentRoom) return;

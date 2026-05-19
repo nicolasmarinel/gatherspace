@@ -32,9 +32,14 @@ export class SocketManager {
     this.socket.on('player-left', (id) => this.scene.removeRemotePlayer(id));
 
     // WebRTC signaling passthrough
-    this.socket.on('webrtc-offer', (d) => this.scene.webRTC?.onOffer(d));
+    this.socket.on('webrtc-offer',  (d) => this.scene.webRTC?.onOffer(d));
     this.socket.on('webrtc-answer', (d) => this.scene.webRTC?.onAnswer(d));
-    this.socket.on('webrtc-ice', (d) => this.scene.webRTC?.onIceCandidate(d));
+    this.socket.on('webrtc-ice',    (d) => this.scene.webRTC?.onIceCandidate(d));
+
+    // Screen-share peer signaling passthrough
+    this.socket.on('screen-offer',  (d) => this.scene.webRTC?.onScreenOffer(d));
+    this.socket.on('screen-answer', (d) => this.scene.webRTC?.onScreenAnswer(d));
+    this.socket.on('screen-ice',    (d) => this.scene.webRTC?.onScreenIce(d));
 
     this.socket.on('disconnect', () => console.log('Socket disconnected'));
     this.socket.on('connect_error', (err) => console.error('Connection error:', err));
@@ -55,9 +60,13 @@ export class SocketManager {
     this._pendingMove = null;
   }
 
-  sendOffer(targetId, offer) { this.socket?.emit('webrtc-offer', { targetId, offer }); }
-  sendAnswer(targetId, answer) { this.socket?.emit('webrtc-answer', { targetId, answer }); }
-  sendIce(targetId, candidate) { this.socket?.emit('webrtc-ice', { targetId, candidate }); }
+  sendOffer(targetId, offer)    { this.socket?.emit('webrtc-offer',  { targetId, offer }); }
+  sendAnswer(targetId, answer)  { this.socket?.emit('webrtc-answer', { targetId, answer }); }
+  sendIce(targetId, candidate)  { this.socket?.emit('webrtc-ice',    { targetId, candidate }); }
+
+  sendScreenOffer(targetId, offer)   { this.socket?.emit('screen-offer',  { targetId, offer }); }
+  sendScreenAnswer(targetId, answer) { this.socket?.emit('screen-answer', { targetId, answer }); }
+  sendScreenIce(targetId, candidate) { this.socket?.emit('screen-ice',    { targetId, candidate }); }
 
   get id() { return this.socket?.id; }
 

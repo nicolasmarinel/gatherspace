@@ -20,7 +20,6 @@ const VIDEO_QUALITIES = {
   sd:  { label: 'SD  (320×240)',        w: 320,  h: 240  },
   hd:  { label: 'HD  (1280×720)',       w: 1280, h: 720  },
   fhd: { label: 'Full HD  (1920×1080)', w: 1920, h: 1080 },
-  qhd: { label: '2K  (2560×1440)',      w: 2560, h: 1440 },
 };
 
 const TILE_W = 128;
@@ -37,15 +36,16 @@ export class WebRTCManager {
   constructor(socketManager, localName = 'You') {
     this.socket     = socketManager;
     this.localName  = localName;
-    this.peers      = new Map();  // peerId -> { pc, stream, audioEl, filmTile, dc }
-    this.peerNames  = new Map();  // peerId -> string
-    this.localStream = null;
+    this.peers       = new Map();  // peerId -> { pc, stream, audioEl, filmTile, dc }
+    this.screenPeers = new Map();  // peerId -> { pc, stream, filmTile }
+    this.peerNames   = new Map();  // peerId -> string
+    this.localStream  = null;
 
-    this.audioMuted    = false;
+    this.audioMuted     = false;
     this.videoHidden    = false;
     this.selfViewHidden = false;
     this.screenSharing  = false;
-    this._screenTrack   = null;
+    this._screenStream  = null;   // active getDisplayMedia stream
     this._expandedOpen  = false;
     this._settingsEl    = null;
     this.currentQuality = localStorage.getItem('gs-video-quality') || 'sd';
@@ -202,38 +202,30 @@ export class WebRTCManager {
   }
 
   async _toggleScreenShare() {
-    if (this.screenSharing) {
-      this._stopScreenShare();
-      return;
-    }
+    if (this.screenSharing) { this._stopScreenShare(); return; }
     try {
-      // The browser's native picker lets the user choose a window or full screen
+      // Browser's native picker — user chooses a window or full screen
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: { cursor: 'always' },
         audio: true,
       });
-      const screenTrack = screenStream.getVideoTracks()[0];
-      this._screenTrack = screenTrack;
+      this._screenStream = screenStream;
       this.screenSharing = true;
 
-      // Hot-swap into every active peer connection
-      this.peers.forEach(peer => {
-        const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
-        if (sender) sender.replaceTrack(screenTrack).catch(console.error);
-      });
+      // Add a local preview tile for the screen (camera tile stays untouched)
+      this._localScreenTile = this._makeTile(screenStream, `${this.localName}'s screen`, false);
+      this._localScreenTile.wrapper.style.borderColor = '#0ea5e9';
+      this._filmstrip.appendChild(this._localScreenTile.wrapper);
 
-      // Show the screen in the local tile
-      this._localTile.video.srcObject = new MediaStream(
-        [screenTrack, ...(this.localStream?.getAudioTracks() ?? [])]
-      );
+      // Open a dedicated screen-share peer connection to every connected peer
+      this.peers.forEach((_, peerId) => this._initiateScreenPeer(peerId));
 
-      // Handle the user clicking "Stop sharing" in the browser's own UI
-      screenTrack.onended = () => this._stopScreenShare();
+      // When the user clicks the browser's "Stop sharing" button
+      screenStream.getVideoTracks()[0].onended = () => this._stopScreenShare();
 
       this._syncControlBtns();
       this._setStatus('🖥️ Screen sharing', '#fde68a');
     } catch (err) {
-      // AbortError / NotAllowedError = user cancelled the picker — not an error
       if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
         console.error('Screen share failed:', err);
         this._setStatus('⚠️ Screen share failed', '#fca5a5');
@@ -243,22 +235,88 @@ export class WebRTCManager {
 
   _stopScreenShare() {
     if (!this.screenSharing) return;
-    this._screenTrack?.stop();
-    this._screenTrack = null;
+    this._screenStream?.getTracks().forEach(t => t.stop());
+    this._screenStream = null;
     this.screenSharing = false;
 
-    // Restore the camera track in all peer connections
-    const camTrack = this.localStream?.getVideoTracks()[0];
-    this.peers.forEach(peer => {
-      const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
-      if (sender && camTrack) sender.replaceTrack(camTrack).catch(console.error);
-    });
+    // Close all screen-share peer connections and remove their tiles
+    this.screenPeers.forEach((_, id) => this._removeScreenPeer(id));
 
-    // Restore local tile
-    if (this._localTile?.video) this._localTile.video.srcObject = this.localStream;
+    // Remove local screen preview tile
+    this._localScreenTile?.wrapper.remove();
+    this._localScreenTile = null;
 
     this._syncControlBtns();
+    if (this._expandedOpen) this._buildExpandedGrid();
     this._setStatus('🟢 Camera + mic ready', '#86efac');
+  }
+
+  // ── screen-share peer connections ─────────────────────────────────────────
+
+  _makeScreenPeerConnection(peerId) {
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) this.socket.sendScreenIce(peerId, candidate);
+    };
+    pc.ontrack = ({ streams }) => this._attachScreenStream(peerId, streams[0]);
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        this._removeScreenPeer(peerId);
+      }
+    };
+    return pc;
+  }
+
+  _initiateScreenPeer(peerId) {
+    if (this.screenPeers.has(peerId) || !this._screenStream) return;
+    const pc = this._makeScreenPeerConnection(peerId);
+    this.screenPeers.set(peerId, { pc, stream: null, filmTile: null });
+    this._screenStream.getTracks().forEach(t => pc.addTrack(t, this._screenStream));
+    pc.createOffer()
+      .then(o => pc.setLocalDescription(o).then(() => o))
+      .then(o => this.socket.sendScreenOffer(peerId, o))
+      .catch(console.error);
+  }
+
+  _attachScreenStream(peerId, stream) {
+    const peer = this.screenPeers.get(peerId);
+    if (!peer || peer.stream) return;
+    peer.stream = stream;
+    const name = this.peerNames.get(peerId) || 'Player';
+    const tile = this._makeTile(stream, `${name}'s screen`, false);
+    tile.wrapper.style.borderColor = '#0ea5e9'; // sky-blue border marks screen tiles
+    peer.filmTile = tile;
+    this._filmstrip.appendChild(tile.wrapper);
+    if (this._expandedOpen) this._buildExpandedGrid();
+  }
+
+  _removeScreenPeer(peerId) {
+    const peer = this.screenPeers.get(peerId);
+    if (!peer) return;
+    peer.pc.close();
+    peer.filmTile?.wrapper.remove();
+    this.screenPeers.delete(peerId);
+    if (this._expandedOpen) this._buildExpandedGrid();
+  }
+
+  async onScreenOffer({ fromId, offer }) {
+    if (this.screenPeers.has(fromId)) return;
+    const pc = this._makeScreenPeerConnection(fromId);
+    this.screenPeers.set(fromId, { pc, stream: null, filmTile: null });
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    this.socket.sendScreenAnswer(fromId, answer);
+  }
+
+  async onScreenAnswer({ fromId, answer }) {
+    await this.screenPeers.get(fromId)?.pc.setRemoteDescription(new RTCSessionDescription(answer));
+  }
+
+  async onScreenIce({ fromId, candidate }) {
+    try {
+      await this.screenPeers.get(fromId)?.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch { /* benign */ }
   }
 
   // ── expanded overlay ──────────────────────────────────────────────────────
@@ -305,11 +363,19 @@ export class WebRTCManager {
     // ── Video grid ──
     const participants = [];
     if (!this.selfViewHidden && this.localStream) {
-      participants.push({ stream: this.localStream, name: `${this.localName} (you)` });
+      participants.push({ stream: this.localStream, name: `${this.localName} (you)`, screen: false });
+    }
+    if (this.screenSharing && this._screenStream) {
+      participants.push({ stream: this._screenStream, name: `${this.localName}'s screen`, screen: true });
     }
     this.peers.forEach((peer, id) => {
       if (peer.stream) {
-        participants.push({ stream: peer.stream, name: this.peerNames.get(id) || 'Player' });
+        participants.push({ stream: peer.stream, name: this.peerNames.get(id) || 'Player', screen: false });
+      }
+    });
+    this.screenPeers.forEach((peer, id) => {
+      if (peer.stream) {
+        participants.push({ stream: peer.stream, name: `${this.peerNames.get(id) || 'Player'}'s screen`, screen: true });
       }
     });
 
@@ -327,10 +393,10 @@ export class WebRTCManager {
         display:grid; grid-template-columns:repeat(${cols},1fr);
         gap:10px; align-content:start;
       `);
-      participants.forEach(({ stream, name }) => {
+      participants.forEach(({ stream, name, screen }) => {
         const cell = mk('div', `
           position:relative; border-radius:12px; overflow:hidden;
-          background:#0f172a; border:2px solid #334155; aspect-ratio:16/9;
+          background:#0f172a; border:2px solid ${screen ? '#0ea5e9' : '#334155'}; aspect-ratio:16/9;
         `);
         const vid = document.createElement('video');
         vid.autoplay = true; vid.playsInline = true; vid.muted = true;
@@ -608,10 +674,14 @@ export class WebRTCManager {
 
   onNearby(peerId, name) {
     if (name) this.peerNames.set(peerId, name);
-    if (this.peers.has(peerId) || !this.localStream) return;
-    // The socket with the lexicographically smaller ID always initiates,
-    // preventing both sides from sending offers simultaneously.
-    if ((this.socket.id ?? '') < peerId) this._initiatePeer(peerId);
+    if (!this.peers.has(peerId) && this.localStream) {
+      // Smaller socket ID always initiates to avoid double-offers
+      if ((this.socket.id ?? '') < peerId) this._initiatePeer(peerId);
+    }
+    // If we're already sharing a screen, open a screen peer for this newcomer too
+    if (this.screenSharing && !this.screenPeers.has(peerId)) {
+      this._initiateScreenPeer(peerId);
+    }
   }
 
   closePeer(peerId) {
@@ -621,6 +691,7 @@ export class WebRTCManager {
     peer.audioEl?.remove();
     peer.filmTile?.wrapper.remove();
     this.peers.delete(peerId);
+    this._removeScreenPeer(peerId); // close screen peer if one exists
     this._hideChat();
     if (this._expandedOpen) this._buildExpandedGrid();
   }
@@ -721,6 +792,7 @@ export class WebRTCManager {
 
   destroy() {
     this.peers.forEach((_, id) => this.closePeer(id));
+    this._stopScreenShare();
     this.localStream?.getTracks().forEach(t => t.stop());
     this._filmstrip?.remove();
     this._bar?.remove();
