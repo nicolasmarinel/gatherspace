@@ -21,7 +21,6 @@ const VIDEO_QUALITIES = {
   hd:  { label: 'HD  (1280×720)',       w: 1280, h: 720  },
   fhd: { label: 'Full HD  (1920×1080)', w: 1920, h: 1080 },
   qhd: { label: '2K  (2560×1440)',      w: 2560, h: 1440 },
-  uhd: { label: '4K  (3840×2160)',      w: 3840, h: 2160 },
 };
 
 const TILE_W = 128;
@@ -43,10 +42,12 @@ export class WebRTCManager {
     this.localStream = null;
 
     this.audioMuted    = false;
-    this.videoHidden   = false;
+    this.videoHidden    = false;
     this.selfViewHidden = false;
-    this._expandedOpen = false;
-    this._settingsEl   = null;
+    this.screenSharing  = false;
+    this._screenTrack   = null;
+    this._expandedOpen  = false;
+    this._settingsEl    = null;
     this.currentQuality = localStorage.getItem('gs-video-quality') || 'sd';
 
     this._buildShell();
@@ -72,11 +73,13 @@ export class WebRTCManager {
       border-radius:14px; padding:8px 14px; align-items:center;
     `);
     this._bar.append(
-      this._ctrlBtn('🎤', 'Mute mic',        'mute', () => this._toggleMute()),
-      this._ctrlBtn('📷', 'Hide camera',     'cam',  () => this._toggleCam()),
-      this._ctrlBtn('👁️', 'Hide self-view',  'self', () => this._toggleSelf()),
+      this._ctrlBtn('🎤', 'Mute mic',        'mute',   () => this._toggleMute()),
+      this._ctrlBtn('📷', 'Hide camera',     'cam',    () => this._toggleCam()),
+      this._ctrlBtn('👁️', 'Hide self-view',  'self',   () => this._toggleSelf()),
       mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-      this._ctrlBtn('⚙️', 'Settings',        '',     () => this._openSettings()),
+      this._ctrlBtn('🖥️', 'Share screen',   'screen', () => this._toggleScreenShare()),
+      mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
+      this._ctrlBtn('⚙️', 'Settings',        '',       () => this._openSettings()),
     );
     document.body.appendChild(this._bar);
 
@@ -157,16 +160,16 @@ export class WebRTCManager {
 
   _applyCtrlState(btn) {
     const map = {
-      mute: [this.audioMuted,     '🔇', '🎤'],
-      cam:  [this.videoHidden,    '🚫', '📷'],
-      self: [this.selfViewHidden, '🙈', '👁️'],
+      mute:   { active: this.audioMuted,     on: '🔇', off: '🎤', bg: '#7f1d1d' },
+      cam:    { active: this.videoHidden,    on: '🚫', off: '📷', bg: '#7f1d1d' },
+      self:   { active: this.selfViewHidden, on: '🙈', off: '👁️', bg: '#334155' },
+      screen: { active: this.screenSharing,  on: '🛑', off: '🖥️', bg: '#14532d' },
     };
     const entry = map[btn.dataset.gsCtrl];
     if (!entry) return;
-    const [active, on, off] = entry;
-    btn.textContent = active ? on : off;
-    btn.style.background = active ? '#7f1d1d' : 'none';
-    btn.dataset.active = active ? '1' : '';
+    btn.textContent = entry.active ? entry.on : entry.off;
+    btn.style.background = entry.active ? entry.bg : 'none';
+    btn.dataset.active = entry.active ? '1' : '';
   }
 
   // Refresh every control button anywhere in the document
@@ -198,6 +201,66 @@ export class WebRTCManager {
     if (this._expandedOpen) this._buildExpandedGrid();
   }
 
+  async _toggleScreenShare() {
+    if (this.screenSharing) {
+      this._stopScreenShare();
+      return;
+    }
+    try {
+      // The browser's native picker lets the user choose a window or full screen
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: 'always' },
+        audio: true,
+      });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      this._screenTrack = screenTrack;
+      this.screenSharing = true;
+
+      // Hot-swap into every active peer connection
+      this.peers.forEach(peer => {
+        const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(screenTrack).catch(console.error);
+      });
+
+      // Show the screen in the local tile
+      this._localTile.video.srcObject = new MediaStream(
+        [screenTrack, ...(this.localStream?.getAudioTracks() ?? [])]
+      );
+
+      // Handle the user clicking "Stop sharing" in the browser's own UI
+      screenTrack.onended = () => this._stopScreenShare();
+
+      this._syncControlBtns();
+      this._setStatus('🖥️ Screen sharing', '#fde68a');
+    } catch (err) {
+      // AbortError / NotAllowedError = user cancelled the picker — not an error
+      if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+        console.error('Screen share failed:', err);
+        this._setStatus('⚠️ Screen share failed', '#fca5a5');
+      }
+    }
+  }
+
+  _stopScreenShare() {
+    if (!this.screenSharing) return;
+    this._screenTrack?.stop();
+    this._screenTrack = null;
+    this.screenSharing = false;
+
+    // Restore the camera track in all peer connections
+    const camTrack = this.localStream?.getVideoTracks()[0];
+    this.peers.forEach(peer => {
+      const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
+      if (sender && camTrack) sender.replaceTrack(camTrack).catch(console.error);
+    });
+
+    // Restore local tile
+    if (this._localTile?.video) this._localTile.video.srcObject = this.localStream;
+
+    this._syncControlBtns();
+    this._setStatus('🟢 Camera + mic ready', '#86efac');
+  }
+
   // ── expanded overlay ──────────────────────────────────────────────────────
 
   _openExpanded() {
@@ -220,12 +283,15 @@ export class WebRTCManager {
       display:flex; align-items:center; gap:6px; padding:10px 16px;
       background:#1e293bdd; border-bottom:1px solid #334155; flex-shrink:0;
     `);
-    // Recreate the three toggles inside the overlay — _syncControlBtns() keeps them in sync
+    // Recreate toggles inside the overlay — _syncControlBtns() keeps them in sync
     header.append(
-      this._ctrlBtn('🎤', 'Mute mic',       'mute', () => this._toggleMute()),
-      this._ctrlBtn('📷', 'Hide camera',    'cam',  () => this._toggleCam()),
-      this._ctrlBtn('👁️', 'Hide self-view', 'self', () => this._toggleSelf()),
-      this._ctrlBtn('⚙️', 'Settings',       '',     () => this._openSettings()),
+      this._ctrlBtn('🎤', 'Mute mic',       'mute',   () => this._toggleMute()),
+      this._ctrlBtn('📷', 'Hide camera',    'cam',    () => this._toggleCam()),
+      this._ctrlBtn('👁️', 'Hide self-view', 'self',   () => this._toggleSelf()),
+      mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
+      this._ctrlBtn('🖥️', 'Share screen',  'screen', () => this._toggleScreenShare()),
+      mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
+      this._ctrlBtn('⚙️', 'Settings',      '',       () => this._openSettings()),
     );
     const spacer = mk('div', 'flex:1;');
     const closeBtn = mk('button', `
