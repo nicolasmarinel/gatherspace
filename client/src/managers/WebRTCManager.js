@@ -672,11 +672,30 @@ export class WebRTCManager {
   async _requestMedia() {
     this._mediaSettled = false;
 
-    // Wrap getUserMedia with a timeout so a missing device doesn't hang the UI
+    // getUserMedia is only available on a secure origin (https / localhost)
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      this._setStatus('🔒 Camera needs HTTPS — tap to retry', '#fca5a5');
+      this._mediaSettled = true;
+      return;
+    }
+
+    // Surface Chrome's stored permission decision. A 'denied' state means the
+    // site was blocked and getUserMedia will never prompt — the user must
+    // re-allow it via the address-bar icon.
+    try {
+      const cam = await navigator.permissions?.query({ name: 'camera' });
+      if (cam?.state === 'denied') {
+        this._setStatus('🚫 Camera blocked — click 🔒/🎥 in address bar → Allow, then tap here', '#fca5a5');
+      }
+    } catch { /* Permissions API may not support 'camera' — ignore */ }
+
+    // Wrap getUserMedia with a timeout so a missing device or a suppressed
+    // permission prompt doesn't hang the UI forever. 20s leaves room for a
+    // user to actually click "Allow" on the prompt.
     const timed = (p) => Promise.race([
       p,
       new Promise((_, rej) =>
-        setTimeout(() => rej(Object.assign(new Error('timeout'), { name: 'TimeoutError' })), 12000)
+        setTimeout(() => rej(Object.assign(new Error('timeout'), { name: 'TimeoutError' })), 20000)
       ),
     ]);
 
@@ -689,7 +708,7 @@ export class WebRTCManager {
       this._showLocalStream();
     } catch (err) {
       if (err.name === 'TimeoutError') {
-        this._setStatus('⚠️ Camera/mic timed out — tap to retry', '#fca5a5');
+        this._setStatus('⚠️ No permission prompt — click 🔒/🎥 in address bar → Allow, then tap here', '#fca5a5');
       } else {
         // Camera failed (busy, blocked, or absent) — fall back to audio-only
         try {
