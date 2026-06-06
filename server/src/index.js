@@ -22,14 +22,30 @@ const io = new Server(httpServer, {
 
 // rooms: Map<roomId, Map<socketId, playerData>>
 const rooms = new Map();
+// sessions: Map<sessionId, { socketId, roomId }> — evict stale reconnects
+const sessions = new Map();
 
 io.on('connection', (socket) => {
   let currentRoom = null;
   let playerData = null;
 
-  socket.on('join-room', ({ roomId, name, avatar, x, y }) => {
+  socket.on('join-room', ({ roomId, name, avatar, x, y, sessionId }) => {
+    // Evict any stale connection sharing the same sessionId (e.g. after a network blip)
+    if (sessionId && sessions.has(sessionId)) {
+      const prev = sessions.get(sessionId);
+      if (prev.socketId !== socket.id) {
+        const prevRoom = rooms.get(prev.roomId);
+        if (prevRoom) {
+          prevRoom.delete(prev.socketId);
+          if (prevRoom.size === 0) rooms.delete(prev.roomId);
+        }
+        io.to(prev.roomId).emit('player-left', prev.socketId);
+        console.log(`[${prev.roomId}] Evicted stale session for ${name} (${prev.socketId})`);
+      }
+    }
+
     currentRoom = roomId;
-    playerData = { id: socket.id, name, avatar, x, y, direction: 'down', isMoving: false };
+    playerData = { id: socket.id, name, avatar, x, y, direction: 'down', isMoving: false, sessionId };
 
     if (!rooms.has(roomId)) rooms.set(roomId, new Map());
     const room = rooms.get(roomId);
@@ -41,6 +57,7 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     socket.to(roomId).emit('player-joined', playerData);
 
+    if (sessionId) sessions.set(sessionId, { socketId: socket.id, roomId });
     console.log(`[${roomId}] ${name} joined (${socket.id}), room size: ${room.size}`);
   });
 
@@ -69,6 +86,12 @@ io.on('connection', (socket) => {
     if (room) {
       room.delete(socket.id);
       if (room.size === 0) rooms.delete(currentRoom);
+    }
+    // Only remove the session entry if this socket is still the owner
+    // (a reconnect may have already replaced it with a new socketId)
+    if (playerData?.sessionId) {
+      const sess = sessions.get(playerData.sessionId);
+      if (sess?.socketId === socket.id) sessions.delete(playerData.sessionId);
     }
     io.to(currentRoom).emit('player-left', socket.id);
     console.log(`[${currentRoom}] ${playerData?.name} left`);

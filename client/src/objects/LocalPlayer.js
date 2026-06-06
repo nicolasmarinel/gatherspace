@@ -27,21 +27,34 @@ export class LocalPlayer {
     }).setOrigin(0.5).setDepth(4.1);
   }
 
-  // Returns true if position changed since last call
-  update(cursors, wasd) {
-    const up = cursors.up.isDown || wasd.up.isDown;
-    const down = cursors.down.isDown || wasd.down.isDown;
-    const left = cursors.left.isDown || wasd.left.isDown;
-    const right = cursors.right.isDown || wasd.right.isDown;
+  // Returns true if position changed since last call.
+  // extVel = { vx, vy } from touch joystick — takes priority over keyboard when set.
+  update(cursors, wasd, extVel = null) {
+    let vx, vy;
 
-    let vx = 0, vy = 0;
-    if (up) { vy = -PLAYER_SPEED; this.direction = 'up'; }
-    else if (down) { vy = PLAYER_SPEED; this.direction = 'down'; }
-    if (left) { vx = -PLAYER_SPEED; this.direction = 'left'; }
-    else if (right) { vx = PLAYER_SPEED; this.direction = 'right'; }
+    if (extVel) {
+      vx = extVel.vx;
+      vy = extVel.vy;
+      if (Math.abs(vx) >= Math.abs(vy)) {
+        if (vx !== 0) this.direction = vx > 0 ? 'right' : 'left';
+      } else {
+        this.direction = vy > 0 ? 'down' : 'up';
+      }
+    } else {
+      const up = cursors.up.isDown || wasd.up.isDown;
+      const down = cursors.down.isDown || wasd.down.isDown;
+      const left = cursors.left.isDown || wasd.left.isDown;
+      const right = cursors.right.isDown || wasd.right.isDown;
 
-    // Normalize diagonal
-    if (vx !== 0 && vy !== 0) { vx *= 0.707; vy *= 0.707; }
+      vx = 0; vy = 0;
+      if (up) { vy = -PLAYER_SPEED; this.direction = 'up'; }
+      else if (down) { vy = PLAYER_SPEED; this.direction = 'down'; }
+      if (left) { vx = -PLAYER_SPEED; this.direction = 'left'; }
+      else if (right) { vx = PLAYER_SPEED; this.direction = 'right'; }
+
+      // Normalize diagonal
+      if (vx !== 0 && vy !== 0) { vx *= 0.707; vy *= 0.707; }
+    }
 
     this.sprite.setVelocity(vx, vy);
     const nowMoving = vx !== 0 || vy !== 0;

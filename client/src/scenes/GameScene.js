@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { MAP_WIDTH, MAP_HEIGHT, PROXIMITY_OPEN_DIST, PROXIMITY_CLOSE_DIST } from '../constants.js';
+import { MAP_WIDTH, MAP_HEIGHT, PROXIMITY_OPEN_DIST, PROXIMITY_CLOSE_DIST, PLAYER_SPEED } from '../constants.js';
 import { LocalPlayer } from '../objects/LocalPlayer.js';
 import { RemotePlayer } from '../objects/RemotePlayer.js';
 import { SocketManager } from '../managers/SocketManager.js';
@@ -18,6 +18,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
+    this._isMobile = navigator.maxTouchPoints > 0;
     this.physics.world.setBounds(32, 32, MAP_WIDTH - 64, MAP_HEIGHT - 64);
 
     this._buildWorld();
@@ -27,6 +28,7 @@ export class GameScene extends Phaser.Scene {
     this._setupCamera();
     this._setupHUD();
     this._setupKeys();
+    this._setupJoystick();
   }
 
   // ── world ─────────────────────────────────────────────────────────────────
@@ -192,7 +194,8 @@ export class GameScene extends Phaser.Scene {
     this.add.text(14, 14, this.playerName, style('14px'))
       .setScrollFactor(0).setDepth(10);
 
-    this.add.text(14, this.scale.height - 26, 'Move: WASD / Arrow Keys', {
+    const hint = this._isMobile ? 'Touch & drag to move' : 'Move: WASD / Arrow Keys';
+    this.add.text(14, this.scale.height - 26, hint, {
       fontSize: '12px', color: '#4b5563', fontFamily: 'monospace'
     }).setScrollFactor(0).setDepth(10);
 
@@ -212,6 +215,64 @@ export class GameScene extends Phaser.Scene {
     };
   }
 
+  _setupJoystick() {
+    if (!this._isMobile) return;
+
+    this._joystick = { active: false, pointerId: -1, startX: 0, startY: 0, dx: 0, dy: 0 };
+    this._joystickGfx = this.add.graphics().setScrollFactor(0).setDepth(50);
+
+    this.input.on('pointerdown', (ptr) => {
+      if (!ptr.wasTouch || this._joystick.active) return;
+      this._joystick.active = true;
+      this._joystick.pointerId = ptr.id;
+      this._joystick.startX = ptr.x;
+      this._joystick.startY = ptr.y;
+      this._joystick.dx = 0;
+      this._joystick.dy = 0;
+    });
+
+    this.input.on('pointermove', (ptr) => {
+      if (!this._joystick.active || ptr.id !== this._joystick.pointerId) return;
+      const MAX = 60;
+      const rawDx = ptr.x - this._joystick.startX;
+      const rawDy = ptr.y - this._joystick.startY;
+      const len = Math.sqrt(rawDx * rawDx + rawDy * rawDy) || 1;
+      const scale = Math.min(len, MAX) / len;
+      this._joystick.dx = rawDx * scale;
+      this._joystick.dy = rawDy * scale;
+    });
+
+    this.input.on('pointerup', (ptr) => {
+      if (ptr.id !== this._joystick.pointerId) return;
+      this._joystick.active = false;
+      this._joystick.dx = 0;
+      this._joystick.dy = 0;
+      this._joystickGfx.clear();
+    });
+  }
+
+  _getJoystickVelocity() {
+    if (!this._joystick?.active) return null;
+    const { dx, dy } = this._joystick;
+    if (dx === 0 && dy === 0) return null;
+    const MAX = 60;
+    return { vx: (dx / MAX) * PLAYER_SPEED, vy: (dy / MAX) * PLAYER_SPEED };
+  }
+
+  _drawJoystick() {
+    if (!this._joystick?.active) return;
+    const g = this._joystickGfx;
+    const { startX, startY, dx, dy } = this._joystick;
+    const MAX = 60;
+    g.clear();
+    g.lineStyle(3, 0xffffff, 0.25);
+    g.strokeCircle(startX, startY, MAX);
+    g.fillStyle(0xffffff, 0.08);
+    g.fillCircle(startX, startY, MAX);
+    g.fillStyle(0xffffff, 0.45);
+    g.fillCircle(startX + dx, startY + dy, 26);
+  }
+
   // ── update loop ───────────────────────────────────────────────────────────
 
   update(_time, delta) {
@@ -225,8 +286,9 @@ export class GameScene extends Phaser.Scene {
     if (inputFocused) {
       this.localPlayer.sprite.setVelocity(0, 0);
     } else {
-      moved = this.localPlayer.update(this.cursors, this.wasd);
+      moved = this.localPlayer.update(this.cursors, this.wasd, this._getJoystickVelocity());
     }
+    if (this._joystick) this._drawJoystick();
 
     if (moved) {
       this.socket?.sendMove(
@@ -271,6 +333,14 @@ export class GameScene extends Phaser.Scene {
     this.nearbyText?.setText(
       nearby.length ? `📡 Near: ${nearby.join(', ')}` : ''
     );
+  }
+
+  // Called by SocketManager when the socket reconnects with a new ID.
+  // Clears stale remote-player state; room-state from the server re-populates it.
+  onSocketReconnect() {
+    this.remotePlayers.forEach(rp => rp.destroy());
+    this.remotePlayers.clear();
+    this.webRTC?.onSocketReconnect();
   }
 
   shutdown() {

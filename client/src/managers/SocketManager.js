@@ -9,14 +9,54 @@ export class SocketManager {
     this._lastMoveSent = 0;
     this._pendingMove = null;
     this._moveTimer = null;
+    // Stored for reconnect re-join
+    this._roomId = null;
+    this._name = null;
+    this._avatarIndex = null;
+    this._sessionId = null;
+    this._firstConnect = true;
+  }
+
+  _getOrCreateSessionId() {
+    const KEY = 'gs-session';
+    let id = sessionStorage.getItem(KEY);
+    if (!id) {
+      id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      sessionStorage.setItem(KEY, id);
+    }
+    return id;
   }
 
   connect(roomId, name, avatarIndex, x, y) {
+    this._roomId = roomId;
+    this._name = name;
+    this._avatarIndex = avatarIndex;
+    this._sessionId = this._getOrCreateSessionId();
+    this._firstConnect = true;
+
     this.socket = io(SERVER_URL, { transports: ['websocket'] });
 
     this.socket.on('connect', () => {
       console.log('Socket connected:', this.socket.id);
-      this.socket.emit('join-room', { roomId, name, avatar: avatarIndex, x, y });
+      if (this._firstConnect) {
+        this._firstConnect = false;
+        this.socket.emit('join-room', {
+          roomId, name, avatar: avatarIndex, x, y,
+          sessionId: this._sessionId,
+        });
+      } else {
+        // Reconnect after a network blip — clean up stale state then re-join
+        console.log('Socket reconnected, re-joining room…');
+        this.scene.onSocketReconnect?.();
+        this.socket.emit('join-room', {
+          roomId: this._roomId,
+          name: this._name,
+          avatar: this._avatarIndex,
+          x: this.scene.localPlayer?.sprite.x ?? x,
+          y: this.scene.localPlayer?.sprite.y ?? y,
+          sessionId: this._sessionId,
+        });
+      }
     });
 
     this.socket.on('room-state', (players) => {
@@ -41,7 +81,7 @@ export class SocketManager {
     this.socket.on('screen-answer', (d) => this.scene.webRTC?.onScreenAnswer(d));
     this.socket.on('screen-ice',    (d) => this.scene.webRTC?.onScreenIce(d));
 
-    this.socket.on('disconnect', () => console.log('Socket disconnected'));
+    this.socket.on('disconnect', (reason) => console.log('Socket disconnected:', reason));
     this.socket.on('connect_error', (err) => console.error('Connection error:', err));
   }
 

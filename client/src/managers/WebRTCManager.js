@@ -49,6 +49,7 @@ export class WebRTCManager {
     this._expandedOpen  = false;
     this._settingsEl    = null;
     this.currentQuality = localStorage.getItem('gs-video-quality') || 'sd';
+    this._canScreenShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 
     this._buildShell();
     this._requestMedia();
@@ -72,15 +73,22 @@ export class WebRTCManager {
       display:flex; gap:6px; background:#1e293b; border:1px solid #334155;
       border-radius:14px; padding:8px 14px; align-items:center;
     `);
-    this._bar.append(
-      this._ctrlBtn('🎤', 'Mute mic',        'mute',   () => this._toggleMute()),
-      this._ctrlBtn('📷', 'Hide camera',     'cam',    () => this._toggleCam()),
-      this._ctrlBtn('👁️', 'Hide self-view',  'self',   () => this._toggleSelf()),
+    const barBtns = [
+      this._ctrlBtn('🎤', 'Mute mic',       'mute', () => this._toggleMute()),
+      this._ctrlBtn('📷', 'Hide camera',    'cam',  () => this._toggleCam()),
+      this._ctrlBtn('👁️', 'Hide self-view', 'self', () => this._toggleSelf()),
+    ];
+    if (this._canScreenShare) {
+      barBtns.push(
+        mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
+        this._ctrlBtn('🖥️', 'Share screen', 'screen', () => this._toggleScreenShare()),
+      );
+    }
+    barBtns.push(
       mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-      this._ctrlBtn('🖥️', 'Share screen',   'screen', () => this._toggleScreenShare()),
-      mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-      this._ctrlBtn('⚙️', 'Settings',        '',       () => this._openSettings()),
+      this._ctrlBtn('⚙️', 'Settings', '', () => this._openSettings()),
     );
+    this._bar.append(...barBtns);
     document.body.appendChild(this._bar);
 
     // Status badge — top-right
@@ -342,15 +350,22 @@ export class WebRTCManager {
       background:#1e293bdd; border-bottom:1px solid #334155; flex-shrink:0;
     `);
     // Recreate toggles inside the overlay — _syncControlBtns() keeps them in sync
-    header.append(
-      this._ctrlBtn('🎤', 'Mute mic',       'mute',   () => this._toggleMute()),
-      this._ctrlBtn('📷', 'Hide camera',    'cam',    () => this._toggleCam()),
-      this._ctrlBtn('👁️', 'Hide self-view', 'self',   () => this._toggleSelf()),
+    const hdrBtns = [
+      this._ctrlBtn('🎤', 'Mute mic',       'mute', () => this._toggleMute()),
+      this._ctrlBtn('📷', 'Hide camera',    'cam',  () => this._toggleCam()),
+      this._ctrlBtn('👁️', 'Hide self-view', 'self', () => this._toggleSelf()),
+    ];
+    if (this._canScreenShare) {
+      hdrBtns.push(
+        mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
+        this._ctrlBtn('🖥️', 'Share screen', 'screen', () => this._toggleScreenShare()),
+      );
+    }
+    hdrBtns.push(
       mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-      this._ctrlBtn('🖥️', 'Share screen',  'screen', () => this._toggleScreenShare()),
-      mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-      this._ctrlBtn('⚙️', 'Settings',      '',       () => this._openSettings()),
+      this._ctrlBtn('⚙️', 'Settings', '', () => this._openSettings()),
     );
+    header.append(...hdrBtns);
     const spacer = mk('div', 'flex:1;');
     const closeBtn = mk('button', `
       background:#334155; border:none; color:#e2e8f0; font-size:18px;
@@ -647,20 +662,35 @@ export class WebRTCManager {
   // ── media ─────────────────────────────────────────────────────────────────
 
   async _requestMedia() {
+    // Wrap getUserMedia with a timeout so a missing device doesn't hang the UI
+    const timed = (p) => Promise.race([
+      p,
+      new Promise((_, rej) =>
+        setTimeout(() => rej(Object.assign(new Error('timeout'), { name: 'TimeoutError' })), 12000)
+      ),
+    ]);
+
     const { w, h } = VIDEO_QUALITIES[this.currentQuality];
     try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
+      this.localStream = await timed(navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: w }, height: { ideal: h }, facingMode: 'user' },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      }));
       this._localTile.video.srcObject = this.localStream;
       this._setStatus('🟢 Camera + mic ready', '#86efac');
-    } catch {
+    } catch (err) {
+      if (err.name === 'TimeoutError') {
+        this._setStatus('⚠️ No camera/mic detected', '#fca5a5');
+        return;
+      }
       try {
-        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.localStream = await timed(navigator.mediaDevices.getUserMedia({ audio: true }));
         this._setStatus('🎤 Audio only', '#fde68a');
-      } catch {
-        this._setStatus('❌ No media access', '#fca5a5');
+      } catch (err2) {
+        this._setStatus(
+          err2.name === 'TimeoutError' ? '⚠️ No audio device found' : '❌ No media access',
+          '#fca5a5'
+        );
       }
     }
   }
@@ -786,6 +816,14 @@ export class WebRTCManager {
     try {
       await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch { /* benign if ICE already settled */ }
+  }
+
+  // ── reconnect ─────────────────────────────────────────────────────────────
+
+  // Called by GameScene when the socket reconnects with a new ID.
+  // Closes all peer connections; they'll re-establish via proximity detection.
+  onSocketReconnect() {
+    Array.from(this.peers.keys()).forEach(id => this.closePeer(id));
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────
