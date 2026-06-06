@@ -51,8 +51,13 @@ export class WebRTCManager {
     this.currentQuality = localStorage.getItem('gs-video-quality') || 'sd';
     this._canScreenShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 
+    // _mediaSettled flips true once the media request resolves (success OR failure).
+    // Proximity won't initiate, and incoming offers won't be answered, until then —
+    // so a slow camera no longer drops the very first handshake.
+    this._mediaSettled = false;
+
     this._buildShell();
-    this._requestMedia();
+    this._mediaReadyPromise = this._requestMedia();
   }
 
   // ── DOM shell ─────────────────────────────────────────────────────────────
@@ -98,6 +103,9 @@ export class WebRTCManager {
       font-family:monospace; font-size:12px; padding:6px 10px; color:#64748b;
     `);
     this._status.textContent = '🎤 Requesting media…';
+    this._status.style.cursor = 'pointer';
+    this._status.title = 'Click to re-request camera / microphone';
+    this._status.addEventListener('click', () => this._retryMedia());
     document.body.appendChild(this._status);
 
     // Expanded overlay — hidden until a tile is clicked
@@ -662,6 +670,8 @@ export class WebRTCManager {
   // ── media ─────────────────────────────────────────────────────────────────
 
   async _requestMedia() {
+    this._mediaSettled = false;
+
     // Wrap getUserMedia with a timeout so a missing device doesn't hang the UI
     const timed = (p) => Promise.race([
       p,
@@ -676,23 +686,76 @@ export class WebRTCManager {
         video: { width: { ideal: w }, height: { ideal: h }, facingMode: 'user' },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       }));
-      this._localTile.video.srcObject = this.localStream;
-      this._setStatus('🟢 Camera + mic ready', '#86efac');
+      this._showLocalStream();
     } catch (err) {
       if (err.name === 'TimeoutError') {
-        this._setStatus('⚠️ No camera/mic detected', '#fca5a5');
-        return;
+        this._setStatus('⚠️ Camera/mic timed out — tap to retry', '#fca5a5');
+      } else {
+        // Camera failed (busy, blocked, or absent) — fall back to audio-only
+        try {
+          this.localStream = await timed(navigator.mediaDevices.getUserMedia({ audio: true }));
+          this._showLocalStream();
+          this._setStatus('🎤 Audio only — tap to retry camera', '#fde68a');
+        } catch (err2) {
+          this._setStatus(
+            err2.name === 'TimeoutError'
+              ? '⚠️ No device found — tap to retry'
+              : '❌ Media blocked — tap to retry',
+            '#fca5a5'
+          );
+        }
       }
-      try {
-        this.localStream = await timed(navigator.mediaDevices.getUserMedia({ audio: true }));
-        this._setStatus('🎤 Audio only', '#fde68a');
-      } catch (err2) {
-        this._setStatus(
-          err2.name === 'TimeoutError' ? '⚠️ No audio device found' : '❌ No media access',
-          '#fca5a5'
-        );
-      }
+    } finally {
+      // Unblock proximity/offer handling whether media succeeded or not,
+      // so a camera-less machine can still receive others' video & audio.
+      this._mediaSettled = true;
     }
+  }
+
+  // Wires a freshly acquired localStream into the local tile and reports
+  // real track state — this surfaces "camera held by another app" cases
+  // where the stream resolves but no frames ever flow (LED stays off).
+  _showLocalStream() {
+    if (!this.localStream) return;
+    const v = this._localTile.video;
+    v.srcObject = this.localStream;
+    v.play?.().catch(() => { /* autoplay edge cases — harmless */ });
+
+    const vt = this.localStream.getVideoTracks()[0];
+    if (vt) {
+      // track.muted === true means the OS handed us the device but no frames
+      // are flowing (typically another app is holding the camera).
+      if (vt.muted) {
+        this._setStatus('📷 Camera busy (another app?) — tap retry', '#fde68a');
+      } else {
+        this._setStatus('🟢 Camera + mic ready', '#86efac');
+      }
+      vt.onmute   = () => this._setStatus('📷 Camera lost frames — tap retry', '#fde68a');
+      vt.onunmute = () => this._setStatus('🟢 Camera + mic ready', '#86efac');
+      vt.onended  = () => this._setStatus('📷 Camera disconnected — tap retry', '#fca5a5');
+    } else {
+      this._setStatus('🎤 Audio only — tap to retry camera', '#fde68a');
+    }
+  }
+
+  // Re-acquire media on demand (status badge click) without a page reload,
+  // then push the new tracks into any already-connected peers.
+  async _retryMedia() {
+    this.localStream?.getTracks().forEach(t => t.stop());
+    this.localStream = null;
+    this._setStatus('🎤 Requesting media…', '#64748b');
+
+    this._mediaReadyPromise = this._requestMedia();
+    await this._mediaReadyPromise;
+    if (!this.localStream) return;
+
+    // Hot-swap new tracks into existing senders (no renegotiation needed)
+    this.peers.forEach(peer => {
+      this.localStream.getTracks().forEach(track => {
+        const sender = peer.pc.getSenders().find(s => s.track?.kind === track.kind);
+        if (sender) sender.replaceTrack(track).catch(() => {});
+      });
+    });
   }
 
   _setStatus(text, color) {
@@ -704,7 +767,9 @@ export class WebRTCManager {
 
   onNearby(peerId, name) {
     if (name) this.peerNames.set(peerId, name);
-    if (!this.peers.has(peerId) && this.localStream) {
+    // Gate on _mediaSettled (not localStream) so a camera-less client still
+    // connects — it'll negotiate a receive-only peer.
+    if (!this.peers.has(peerId) && this._mediaSettled) {
       // Smaller socket ID always initiates to avoid double-offers
       if ((this.socket.id ?? '') < peerId) this._initiatePeer(peerId);
     }
@@ -754,7 +819,13 @@ export class WebRTCManager {
     this.peers.set(peerId, { pc, stream: null, audioEl: null, filmTile: null, dc: null });
     const dc = pc.createDataChannel('chat', { ordered: true });
     this._setupDataChannel(peerId, dc);
-    this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
+    } else {
+      // No camera/mic — still negotiate so we can receive the other side
+      pc.addTransceiver('audio', { direction: 'recvonly' });
+      pc.addTransceiver('video', { direction: 'recvonly' });
+    }
     pc.createOffer()
       .then(o => pc.setLocalDescription(o).then(() => o))
       .then(o => this.socket.sendOffer(peerId, o))
@@ -794,10 +865,19 @@ export class WebRTCManager {
   // ── signaling ─────────────────────────────────────────────────────────────
 
   async onOffer({ fromId, offer }) {
-    if (this.peers.has(fromId) || !this.localStream) return;
+    if (this.peers.has(fromId)) return;
+    // Wait for media to settle instead of dropping the offer — this is the fix
+    // for connections failing on first login until players walk apart & back.
+    await this._mediaReadyPromise;
+    if (this.peers.has(fromId)) return; // a duplicate offer may have raced us
+
     const pc = this._makePeerConnection(fromId);
     this.peers.set(fromId, { pc, stream: null, audioEl: null, filmTile: null, dc: null });
-    this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
+    // If we have no local media, the remote's send-only tracks still create
+    // receive-only transceivers here automatically — so we receive them.
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
+    }
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
