@@ -16,10 +16,13 @@ const ICE_SERVERS = [
   },
 ];
 
+// bitrate caps (bps) keep bandwidth predictable while letting the encoder
+// spend enough bits to avoid the heavy compression artifacts WebRTC's
+// conservative defaults produce.
 const VIDEO_QUALITIES = {
-  sd:  { label: 'SD  (320×240)',        w: 320,  h: 240  },
-  hd:  { label: 'HD  (1280×720)',       w: 1280, h: 720  },
-  fhd: { label: 'Full HD  (1920×1080)', w: 1920, h: 1080 },
+  sd:  { label: 'Standard  (640×480)',  w: 640,  h: 480,  bitrate:   700_000, fps: 30 },
+  hd:  { label: 'HD  (1280×720)',       w: 1280, h: 720,  bitrate: 1_800_000, fps: 30 },
+  fhd: { label: 'Full HD  (1920×1080)', w: 1920, h: 1080, bitrate: 3_500_000, fps: 30 },
 };
 
 const TILE_W = 128;
@@ -513,10 +516,10 @@ export class WebRTCManager {
 
   async _changeQuality(quality) {
     if (quality === this.currentQuality) return;
-    const { w, h } = VIDEO_QUALITIES[quality];
+    const { w, h, fps } = VIDEO_QUALITIES[quality];
     try {
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: w }, height: { ideal: h } },
+        video: { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } },
       });
       const newTrack = newStream.getVideoTracks()[0];
       if (!newTrack) return;
@@ -529,14 +532,17 @@ export class WebRTCManager {
       this.localStream?.addTrack(newTrack);
       if (this._localTile?.video) this._localTile.video.srcObject = this.localStream;
 
-      // Hot-swap the track in all live peer connections (no renegotiation needed)
+      this.currentQuality = quality;
+      localStorage.setItem('gs-video-quality', quality);
+
+      // Hot-swap the track in all live peer connections (no renegotiation needed),
+      // then re-apply the new quality's bitrate ceiling.
       this.peers.forEach(peer => {
         const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
         if (sender) sender.replaceTrack(newTrack).catch(console.error);
+        this._tuneVideoBitrate(peer.pc);
       });
 
-      this.currentQuality = quality;
-      localStorage.setItem('gs-video-quality', quality);
       this._setStatus(`📐 ${VIDEO_QUALITIES[quality].label}`, '#86efac');
     } catch (err) {
       console.error('Quality change failed:', err);
@@ -567,7 +573,19 @@ export class WebRTCManager {
       border-radius:10px; padding:1px 6px; display:none; font-family:monospace;
     `);
     this._unreadCount = 0;
-    hdr.append(hdrTitle, this._unreadBadge);
+
+    // Minimize / restore toggle — collapses the panel to just this header bar
+    this._chatMinimized = false;
+    this._chatMinBtn = mk('button', `
+      background:#334155; border:none; color:#e2e8f0; font-size:16px;
+      width:26px; height:26px; border-radius:6px; cursor:pointer; line-height:1;
+      flex-shrink:0;
+    `);
+    this._chatMinBtn.textContent = '–';
+    this._chatMinBtn.title = 'Minimize chat';
+    this._chatMinBtn.addEventListener('click', () => this._toggleChatMinimize());
+
+    hdr.append(hdrTitle, this._unreadBadge, this._chatMinBtn);
 
     // Message list — grows to fill the panel
     this._chatMessages = mk('div', `
@@ -621,8 +639,21 @@ export class WebRTCManager {
     });
 
     inputRow.append(this._chatInput, sendBtn);
+    this._chatInputRow = inputRow;
     this._chat.append(hdr, this._chatMessages, inputRow);
     document.body.appendChild(this._chat);
+  }
+
+  // Collapse the chat to just its header bar (frees the screen, esp. on mobile)
+  _toggleChatMinimize() {
+    this._chatMinimized = !this._chatMinimized;
+    const hide = this._chatMinimized;
+    this._chatMessages.style.display = hide ? 'none' : 'flex';
+    this._chatInputRow.style.display = hide ? 'none' : 'flex';
+    // bottom:auto lets the panel shrink to header height when collapsed
+    this._chat.style.bottom = hide ? 'auto' : '0';
+    this._chatMinBtn.textContent = hide ? '+' : '–';
+    this._chatMinBtn.title = hide ? 'Expand chat' : 'Minimize chat';
   }
 
   _showChat() {
@@ -705,10 +736,10 @@ export class WebRTCManager {
       ),
     ]);
 
-    const { w, h } = VIDEO_QUALITIES[this.currentQuality];
+    const { w, h, fps } = VIDEO_QUALITIES[this.currentQuality];
     try {
       this.localStream = await timed(navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: w }, height: { ideal: h }, facingMode: 'user' },
+        video: { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps }, facingMode: 'user' },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       }));
       this._showLocalStream();
@@ -780,6 +811,7 @@ export class WebRTCManager {
         const sender = peer.pc.getSenders().find(s => s.track?.kind === track.kind);
         if (sender) sender.replaceTrack(track).catch(() => {});
       });
+      this._tuneVideoBitrate(peer.pc);
     });
   }
 
@@ -839,6 +871,23 @@ export class WebRTCManager {
     return pc;
   }
 
+  // Raise the encoder's bitrate ceiling so video isn't over-compressed.
+  // WebRTC defaults are conservative; this lets the chosen quality look sharp
+  // while still capping bandwidth at a predictable value.
+  async _tuneVideoBitrate(pc) {
+    const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+    if (!sender) return;
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    const q = VIDEO_QUALITIES[this.currentQuality];
+    params.encodings[0].maxBitrate = q.bitrate;
+    params.encodings[0].maxFramerate = q.fps;
+    // Prefer dropping frames over shrinking resolution under bandwidth pressure
+    params.degradationPreference = 'maintain-resolution';
+    try { await sender.setParameters(params); }
+    catch (e) { console.warn('Bitrate tuning failed:', e); }
+  }
+
   _initiatePeer(peerId) {
     const pc = this._makePeerConnection(peerId);
     this.peers.set(peerId, { pc, stream: null, audioEl: null, filmTile: null, dc: null });
@@ -846,6 +895,7 @@ export class WebRTCManager {
     this._setupDataChannel(peerId, dc);
     if (this.localStream) {
       this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
+      this._tuneVideoBitrate(pc);
     } else {
       // No camera/mic — still negotiate so we can receive the other side
       pc.addTransceiver('audio', { direction: 'recvonly' });
@@ -902,6 +952,7 @@ export class WebRTCManager {
     // receive-only transceivers here automatically — so we receive them.
     if (this.localStream) {
       this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
+      this._tuneVideoBitrate(pc);
     }
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
     const answer = await pc.createAnswer();
