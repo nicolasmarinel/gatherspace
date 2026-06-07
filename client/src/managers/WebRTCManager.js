@@ -547,19 +547,20 @@ export class WebRTCManager {
   // ── chat panel ────────────────────────────────────────────────────────────
 
   _buildChatPanel() {
+    // Docked full-height panel on the right edge of the screen
     this._chat = mk('div', `
-      position:fixed; bottom:80px; right:14px; width:288px; z-index:100;
-      background:#1e293b; border:1px solid #334155; border-radius:12px;
+      position:fixed; top:0; right:0; bottom:0; width:300px; z-index:100;
+      background:#1e293b; border-left:1px solid #334155;
       display:none; flex-direction:column; overflow:hidden;
-      box-shadow:0 4px 24px #00000066;
+      box-shadow:-4px 0 24px #00000066;
     `);
 
     // Header
     const hdr = mk('div', `
-      padding:9px 12px; background:#0f172a; border-bottom:1px solid #334155;
-      display:flex; align-items:center; justify-content:space-between; flex-shrink:0;
+      padding:11px 14px; background:#0f172a; border-bottom:1px solid #334155;
+      display:flex; align-items:center; gap:8px; flex-shrink:0;
     `);
-    const hdrTitle = mk('span', 'font-family:monospace;font-size:13px;color:#94a3b8;font-weight:bold;');
+    const hdrTitle = mk('span', 'font-family:monospace;font-size:13px;color:#94a3b8;font-weight:bold;flex:1;');
     hdrTitle.textContent = '💬 Nearby Chat';
     this._unreadBadge = mk('span', `
       background:#ef4444; color:#fff; font-size:10px;
@@ -568,10 +569,10 @@ export class WebRTCManager {
     this._unreadCount = 0;
     hdr.append(hdrTitle, this._unreadBadge);
 
-    // Message list
+    // Message list — grows to fill the panel
     this._chatMessages = mk('div', `
-      overflow-y:auto; padding:8px; display:flex; flex-direction:column;
-      gap:5px; max-height:220px; min-height:80px;
+      flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column;
+      gap:5px;
       scrollbar-width:thin; scrollbar-color:#334155 transparent;
     `);
 
@@ -598,7 +599,12 @@ export class WebRTCManager {
         e.preventDefault();
         this._sendMessage(this._chatInput.value);
         this._chatInput.value = '';
+      } else if (e.key === 'Escape') {
+        // Release focus so arrow-key movement resumes
+        this._chatInput.blur();
       }
+      // Don't let keystrokes reach Phaser's keyboard handler while typing
+      e.stopPropagation();
     });
 
     const sendBtn = mk('button', `

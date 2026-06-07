@@ -194,7 +194,7 @@ export class GameScene extends Phaser.Scene {
     this.add.text(14, 14, this.playerName, style('14px'))
       .setScrollFactor(0).setDepth(10);
 
-    const hint = this._isMobile ? 'Touch & drag to move' : 'Move: WASD / Arrow Keys';
+    const hint = this._isMobile ? 'Touch & drag to move' : 'Move: Arrow Keys';
     this.add.text(14, this.scale.height - 26, hint, {
       fontSize: '12px', color: '#4b5563', fontFamily: 'monospace'
     }).setScrollFactor(0).setDepth(10);
@@ -206,13 +206,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   _setupKeys() {
+    // Arrow keys only — letter keys stay free for typing in chat
     this.cursors = this.input.keyboard.createCursorKeys();
-    this.wasd = {
-      up: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W),
-      down: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S),
-      left: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
-      right: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
-    };
+
+    // Clicking the game world drops focus from any text input (e.g. chat),
+    // so movement resumes without needing to hunt for an escape.
+    this.input.on('pointerdown', () => {
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
+    });
   }
 
   _setupJoystick() {
@@ -286,7 +288,7 @@ export class GameScene extends Phaser.Scene {
     if (inputFocused) {
       this.localPlayer.sprite.setVelocity(0, 0);
     } else {
-      moved = this.localPlayer.update(this.cursors, this.wasd, this._getJoystickVelocity());
+      moved = this.localPlayer.update(this.cursors, this._getJoystickVelocity());
     }
     if (this._joystick) this._drawJoystick();
 

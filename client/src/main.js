@@ -22,6 +22,14 @@ const game = new Phaser.Game({
   roundPixels: true
 });
 
-window.addEventListener('resize', () => {
+// Keep the canvas matched to the viewport. A ResizeObserver fires reliably
+// for every size change — mouse-drag, keyboard tiling, and window-manager
+// snapping alike — whereas the window 'resize' event can miss WM-driven
+// tiling, leaving the canvas smaller than the window (empty background).
+function syncSize() {
   game.scale.resize(window.innerWidth, window.innerHeight);
-});
+}
+window.addEventListener('resize', syncSize);
+if (window.ResizeObserver) {
+  new ResizeObserver(syncSize).observe(document.documentElement);
+}
