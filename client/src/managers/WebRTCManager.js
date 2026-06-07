@@ -50,6 +50,7 @@ export class WebRTCManager {
     this.screenSharing  = false;
     this._screenStream  = null;   // active getDisplayMedia stream
     this._expandedOpen  = false;
+    this._focusedKey    = null;   // participant key pinned to the focus stage
     this._settingsEl    = null;
     this.currentQuality = localStorage.getItem('gs-video-quality') || 'sd';
     this._canScreenShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
@@ -141,7 +142,8 @@ export class WebRTCManager {
     video.autoplay = true;
     video.playsInline = true;
     video.muted = true; // audio is handled by a separate <audio> el
-    video.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+    // contain + black fill: always show the whole frame, never crop/reframe
+    video.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;display:block;';
     if (stream) video.srcObject = stream;
 
     const label = mk('div', `
@@ -348,6 +350,7 @@ export class WebRTCManager {
 
   _closeExpanded() {
     this._expandedOpen = false;
+    this._focusedKey = null;
     this._overlay.innerHTML = '';
     this._overlay.style.display = 'none';
   }
@@ -386,24 +389,29 @@ export class WebRTCManager {
     closeBtn.addEventListener('click', () => this._closeExpanded());
     header.append(spacer, closeBtn);
 
-    // ── Video grid ──
+    // ── Participants (each gets a stable key for focus tracking) ──
     const participants = [];
     if (!this.selfViewHidden && this.localStream) {
-      participants.push({ stream: this.localStream, name: `${this.localName} (you)`, screen: false });
+      participants.push({ key: 'local-cam', stream: this.localStream, name: `${this.localName} (you)`, screen: false });
     }
     if (this.screenSharing && this._screenStream) {
-      participants.push({ stream: this._screenStream, name: `${this.localName}'s screen`, screen: true });
+      participants.push({ key: 'local-screen', stream: this._screenStream, name: `${this.localName}'s screen`, screen: true });
     }
     this.peers.forEach((peer, id) => {
       if (peer.stream) {
-        participants.push({ stream: peer.stream, name: this.peerNames.get(id) || 'Player', screen: false });
+        participants.push({ key: `cam:${id}`, stream: peer.stream, name: this.peerNames.get(id) || 'Player', screen: false });
       }
     });
     this.screenPeers.forEach((peer, id) => {
       if (peer.stream) {
-        participants.push({ stream: peer.stream, name: `${this.peerNames.get(id) || 'Player'}'s screen`, screen: true });
+        participants.push({ key: `screen:${id}`, stream: peer.stream, name: `${this.peerNames.get(id) || 'Player'}'s screen`, screen: true });
       }
     });
+
+    // Drop a stale focus if that participant has left
+    if (this._focusedKey && !participants.some(p => p.key === this._focusedKey)) {
+      this._focusedKey = null;
+    }
 
     let body;
     if (participants.length === 0) {
@@ -412,34 +420,102 @@ export class WebRTCManager {
         font-family:monospace; color:#64748b; font-size:15px;
       `);
       body.textContent = 'No one nearby — walk up to someone!';
+    } else if (this._focusedKey) {
+      body = this._buildFocusView(participants);
     } else {
-      const cols = gridCols(participants.length);
-      body = mk('div', `
-        flex:1; overflow-y:auto; padding:14px;
-        display:grid; grid-template-columns:repeat(${cols},1fr);
-        gap:10px; align-content:start;
-      `);
-      participants.forEach(({ stream, name, screen }) => {
-        const cell = mk('div', `
-          position:relative; border-radius:12px; overflow:hidden;
-          background:#0f172a; border:2px solid ${screen ? '#0ea5e9' : '#334155'}; aspect-ratio:16/9;
-        `);
-        const vid = document.createElement('video');
-        vid.autoplay = true; vid.playsInline = true; vid.muted = true;
-        vid.srcObject = stream;
-        vid.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
-        const lbl = mk('div', `
-          position:absolute; bottom:0; left:0; right:0;
-          background:#000000bb; font-family:monospace;
-          font-size:13px; color:#e2e8f0; padding:6px 10px;
-        `);
-        lbl.textContent = name;
-        cell.append(vid, lbl);
-        body.appendChild(cell);
-      });
+      body = this._buildGridView(participants);
     }
 
     this._overlay.append(header, body);
+  }
+
+  // A video element that always shows the whole frame, black-filling the rest
+  _makeExpVideo(stream) {
+    const vid = document.createElement('video');
+    vid.autoplay = true; vid.playsInline = true; vid.muted = true;
+    vid.srcObject = stream;
+    vid.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;display:block;';
+    return vid;
+  }
+
+  _cellLabel(name, small = false) {
+    const lbl = mk('div', `
+      position:absolute; bottom:0; left:0; right:0;
+      background:#000000bb; font-family:monospace;
+      font-size:${small ? '10px' : '13px'}; color:#e2e8f0;
+      padding:${small ? '3px 6px' : '6px 10px'};
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    `);
+    lbl.textContent = name;
+    return lbl;
+  }
+
+  // Equal-sized grid; clicking any cell focuses that participant
+  _buildGridView(participants) {
+    const cols = gridCols(participants.length);
+    const grid = mk('div', `
+      flex:1; overflow-y:auto; padding:14px;
+      display:grid; grid-template-columns:repeat(${cols},1fr);
+      gap:10px; align-content:start;
+    `);
+    participants.forEach(p => {
+      const cell = mk('div', `
+        position:relative; border-radius:12px; overflow:hidden; cursor:pointer;
+        background:#000; border:2px solid ${p.screen ? '#0ea5e9' : '#334155'}; aspect-ratio:16/9;
+      `);
+      cell.append(this._makeExpVideo(p.stream), this._cellLabel(p.name));
+      cell.addEventListener('click', () => { this._focusedKey = p.key; this._buildExpandedGrid(); });
+      grid.appendChild(cell);
+    });
+    return grid;
+  }
+
+  // One participant fills the stage; everyone else sits in a strip below.
+  // This focus state is local to this client only.
+  _buildFocusView(participants) {
+    const focused = participants.find(p => p.key === this._focusedKey);
+    const wrap = mk('div', 'flex:1; display:flex; flex-direction:column; min-height:0; padding:14px; gap:10px;');
+
+    // Main stage — click to de-focus back to the grid
+    const stage = mk('div', `
+      position:relative; flex:1; min-height:0; border-radius:12px; overflow:hidden;
+      cursor:pointer; background:#000;
+      border:2px solid ${focused.screen ? '#0ea5e9' : '#3b82f6'};
+    `);
+    stage.append(this._makeExpVideo(focused.stream), this._cellLabel(focused.name));
+    const hint = mk('div', `
+      position:absolute; top:10px; right:12px; background:#000000aa;
+      font-family:monospace; font-size:11px; color:#cbd5e1;
+      padding:4px 8px; border-radius:6px;
+    `);
+    hint.textContent = 'click to exit focus';
+    stage.appendChild(hint);
+    stage.addEventListener('click', () => { this._focusedKey = null; this._buildExpandedGrid(); });
+
+    // Strip of every participant; click to switch focus (or unfocus the active one)
+    const strip = mk('div', `
+      display:flex; gap:8px; overflow-x:auto; flex-shrink:0; padding-bottom:4px;
+      scrollbar-width:thin; scrollbar-color:#334155 transparent;
+    `);
+    participants.forEach(p => {
+      const isFocused = p.key === this._focusedKey;
+      const thumb = mk('div', `
+        position:relative; border-radius:8px; overflow:hidden; cursor:pointer; flex-shrink:0;
+        width:160px; height:90px; background:#000;
+        border:2px solid ${isFocused ? '#3b82f6' : (p.screen ? '#0ea5e9' : '#334155')};
+        opacity:${isFocused ? '1' : '0.8'};
+      `);
+      thumb.append(this._makeExpVideo(p.stream), this._cellLabel(p.name, true));
+      thumb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._focusedKey = isFocused ? null : p.key;
+        this._buildExpandedGrid();
+      });
+      strip.appendChild(thumb);
+    });
+
+    wrap.append(stage, strip);
+    return wrap;
   }
 
   // ── settings modal ────────────────────────────────────────────────────────
