@@ -191,7 +191,8 @@ export class GameScene extends Phaser.Scene {
       backgroundColor: '#1a202ccc', padding: { x: 6, y: 3 }
     });
 
-    this.add.text(14, 14, this.playerName, style('14px'))
+    // Name + move hint live bottom-left; the top-left is now the video filmstrip
+    this.add.text(14, this.scale.height - 48, this.playerName, style('14px'))
       .setScrollFactor(0).setDepth(10);
 
     const hint = this._isMobile ? 'Touch & drag to move' : 'Move: Arrow Keys';

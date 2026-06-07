@@ -25,8 +25,8 @@ const VIDEO_QUALITIES = {
   fhd: { label: 'Full HD  (1920×1080)', w: 1920, h: 1080, bitrate: 3_500_000, fps: 30 },
 };
 
-const TILE_W = 128;
-const TILE_H = 96;
+const TILE_W = 256;
+const TILE_H = 192;
 
 function gridCols(n) {
   if (n <= 1) return 1;
@@ -53,6 +53,8 @@ export class WebRTCManager {
     this._focusedKey    = null;   // participant key pinned to the focus stage
     this._settingsEl    = null;
     this.currentQuality = localStorage.getItem('gs-video-quality') || 'sd';
+    // 'enhanced' = full per-quality bitrate; 'reduced' = lighter for old hardware / weak links
+    this.bitrateMode = localStorage.getItem('gs-bitrate-mode') || 'enhanced';
     this._canScreenShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 
     // _mediaSettled flips true once the media request resolves (success OR failure).
@@ -67,10 +69,10 @@ export class WebRTCManager {
   // ── DOM shell ─────────────────────────────────────────────────────────────
 
   _buildShell() {
-    // Filmstrip — bottom-left
+    // Filmstrip — top-left
     this._filmstrip = mk('div', `
-      position:fixed; bottom:14px; left:14px; z-index:100;
-      display:flex; gap:8px; flex-wrap:wrap; max-width:680px; align-items:flex-end;
+      position:fixed; top:14px; left:14px; z-index:100;
+      display:flex; gap:8px; flex-wrap:wrap; max-width:70vw; align-items:flex-start;
     `);
     this._localTile = this._makeTile(null, this.localName, true);
     this._filmstrip.appendChild(this._localTile.wrapper);
@@ -495,13 +497,14 @@ export class WebRTCManager {
     // Strip of every participant; click to switch focus (or unfocus the active one)
     const strip = mk('div', `
       display:flex; gap:8px; overflow-x:auto; flex-shrink:0; padding-bottom:4px;
+      justify-content:center;
       scrollbar-width:thin; scrollbar-color:#334155 transparent;
     `);
     participants.forEach(p => {
       const isFocused = p.key === this._focusedKey;
       const thumb = mk('div', `
         position:relative; border-radius:8px; overflow:hidden; cursor:pointer; flex-shrink:0;
-        width:160px; height:90px; background:#000;
+        width:320px; height:180px; background:#000;
         border:2px solid ${isFocused ? '#3b82f6' : (p.screen ? '#0ea5e9' : '#334155')};
         opacity:${isFocused ? '1' : '0.8'};
       `);
@@ -579,10 +582,59 @@ export class WebRTCManager {
     const note = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
     note.textContent = 'HD/Full HD requires a camera that supports it. Higher resolution uses more bandwidth.';
 
-    panel.append(titleRow, sectionLabel, options, note);
+    // Bandwidth section
+    const bwLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
+    bwLabel.textContent = 'BANDWIDTH';
+
+    const BW_OPTIONS = [
+      { key: 'enhanced', label: 'Enhanced  (sharper)' },
+      { key: 'reduced',  label: 'Reduced  (old hardware / slow link)' },
+    ];
+    const bwOptions = mk('div', 'display:flex;flex-direction:column;gap:6px;');
+    BW_OPTIONS.forEach(({ key, label }) => {
+      const isActive = key === this.bitrateMode;
+      const row = mk('label', `
+        display:flex; align-items:center; gap:10px; padding:10px 12px;
+        border-radius:8px; cursor:pointer;
+        border:1px solid ${isActive ? '#3b82f6' : '#334155'};
+        background:${isActive ? '#1e3a5f' : 'transparent'};
+        transition:all .15s;
+      `);
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'gs-bitrate';
+      radio.value = key;
+      radio.checked = isActive;
+      radio.style.accentColor = '#3b82f6';
+      radio.addEventListener('change', () => {
+        if (radio.checked) { this._changeBitrateMode(key); this._closeSettings(); }
+      });
+      const lbl = document.createElement('span');
+      lbl.textContent = label;
+      lbl.style.fontSize = '14px';
+      row.append(radio, lbl);
+      bwOptions.appendChild(row);
+    });
+
+    const bwNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
+    bwNote.textContent = 'Reduced lowers the bitrate and frame rate to ease strain on older machines and weak connections.';
+
+    panel.append(titleRow, sectionLabel, options, note, bwLabel, bwOptions, bwNote);
     modal.appendChild(panel);
     document.body.appendChild(modal);
     this._settingsEl = modal;
+  }
+
+  _changeBitrateMode(mode) {
+    if (mode === this.bitrateMode) return;
+    this.bitrateMode = mode;
+    localStorage.setItem('gs-bitrate-mode', mode);
+    // Re-apply caps to every live connection immediately (no renegotiation)
+    this.peers.forEach(peer => this._tuneVideoBitrate(peer.pc));
+    this._setStatus(
+      mode === 'reduced' ? '📉 Reduced bandwidth mode' : '📈 Enhanced quality mode',
+      '#86efac'
+    );
   }
 
   _closeSettings() {
@@ -956,8 +1008,10 @@ export class WebRTCManager {
     const params = sender.getParameters();
     if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
     const q = VIDEO_QUALITIES[this.currentQuality];
-    params.encodings[0].maxBitrate = q.bitrate;
-    params.encodings[0].maxFramerate = q.fps;
+    const reduced = this.bitrateMode === 'reduced';
+    // Reduced mode caps bitrate ~40% and framerate at 20fps to ease CPU/bandwidth
+    params.encodings[0].maxBitrate   = reduced ? Math.round(q.bitrate * 0.4) : q.bitrate;
+    params.encodings[0].maxFramerate = reduced ? 20 : q.fps;
     // Prefer dropping frames over shrinking resolution under bandwidth pressure
     params.degradationPreference = 'maintain-resolution';
     try { await sender.setParameters(params); }
