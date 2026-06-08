@@ -114,9 +114,10 @@ export class WebRTCManager {
     this._status.addEventListener('click', () => this._retryMedia());
     document.body.appendChild(this._status);
 
-    // Expanded overlay — hidden until a tile is clicked
+    // Expanded overlay — hidden until a tile is clicked.
+    // Opaque background so nothing behind it shows through / overlaps.
     this._overlay = mk('div', `
-      position:fixed; inset:0; background:#000000cc; z-index:200;
+      position:fixed; inset:0; background:#0b1220; z-index:200;
       display:none; flex-direction:column;
     `);
     this._overlay.addEventListener('click', e => {
@@ -346,6 +347,10 @@ export class WebRTCManager {
 
   _openExpanded() {
     this._expandedOpen = true;
+    // Hide the avatar-view previews and control bar so they don't sit behind
+    // (and show through / overlap) the call view.
+    this._filmstrip.style.display = 'none';
+    this._bar.style.display = 'none';
     this._overlay.style.display = 'flex';
     this._buildExpandedGrid();
   }
@@ -355,6 +360,8 @@ export class WebRTCManager {
     this._focusedKey = null;
     this._overlay.innerHTML = '';
     this._overlay.style.display = 'none';
+    this._filmstrip.style.display = 'flex';
+    this._bar.style.display = 'flex';
   }
 
   _buildExpandedGrid() {
@@ -702,15 +709,16 @@ export class WebRTCManager {
     `);
     this._unreadCount = 0;
 
-    // Minimize / restore toggle — collapses the panel to just this header bar
-    this._chatMinimized = false;
+    // Minimize / restore toggle — collapses the panel to just this header bar.
+    // Starts minimized so it stays out of the way when entering a room.
+    this._chatMinimized = true;
     this._chatMinBtn = mk('button', `
       background:#334155; border:none; color:#e2e8f0; font-size:16px;
       width:26px; height:26px; border-radius:6px; cursor:pointer; line-height:1;
       flex-shrink:0;
     `);
-    this._chatMinBtn.textContent = '–';
-    this._chatMinBtn.title = 'Minimize chat';
+    this._chatMinBtn.textContent = '+';
+    this._chatMinBtn.title = 'Expand chat';
     this._chatMinBtn.addEventListener('click', () => this._toggleChatMinimize());
 
     hdr.append(hdrTitle, this._unreadBadge, this._chatMinBtn);
@@ -770,6 +778,11 @@ export class WebRTCManager {
     this._chatInputRow = inputRow;
     this._chat.append(hdr, this._chatMessages, inputRow);
     document.body.appendChild(this._chat);
+
+    // Apply the initial minimized state (collapsed to the header bar)
+    this._chatMessages.style.display = 'none';
+    this._chatInputRow.style.display = 'none';
+    this._chat.style.bottom = 'auto';
   }
 
   // Collapse the chat to just its header bar (frees the screen, esp. on mobile)
