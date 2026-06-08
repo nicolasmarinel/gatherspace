@@ -2,6 +2,11 @@
 // Chat uses RTCDataChannel — peer-to-peer, automatically scoped to nearby players.
 // STUN handles most networks; Open Relay TURN covers strict-NAT home routers.
 
+import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
+import rnnoiseWorkletUrl from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url';
+import rnnoiseWasmUrl from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
+import rnnoiseSimdWasmUrl from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url';
+
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -49,6 +54,13 @@ export class WebRTCManager {
     // 'enhanced' = full per-quality bitrate; 'reduced' = lighter for old hardware / weak links
     this.bitrateMode = localStorage.getItem('gs-bitrate-mode') || 'enhanced';
     this._canScreenShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+
+    // RNNoise ML noise suppression (kills keyboard/traffic/hum). On by default.
+    this.noiseSuppression = localStorage.getItem('gs-noise') !== 'off';
+    this._rawAudioTrack = null;    // mic track straight from getUserMedia
+    this._cleanAudioTrack = null;  // denoised output track
+    this._audioCtx = null;
+    this._denoiseNode = null;
 
     // _mediaSettled flips true once the media request resolves (success OR failure).
     // Proximity won't initiate, and incoming offers won't be answered, until then —
@@ -677,7 +689,43 @@ export class WebRTCManager {
     const bwNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
     bwNote.textContent = 'Reduced lowers the bitrate and frame rate to ease strain on older machines and weak connections.';
 
-    panel.append(titleRow, sectionLabel, options, note, bwLabel, bwOptions, bwNote);
+    // Noise suppression section
+    const nsLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
+    nsLabel.textContent = 'MICROPHONE';
+
+    const NS_OPTIONS = [
+      { on: true,  label: 'Noise reduction: On  (recommended)' },
+      { on: false, label: 'Noise reduction: Off' },
+    ];
+    const nsOptions = mk('div', 'display:flex;flex-direction:column;gap:6px;');
+    NS_OPTIONS.forEach(({ on, label }) => {
+      const isActive = on === this.noiseSuppression;
+      const row = mk('label', `
+        display:flex; align-items:center; gap:10px; padding:10px 12px;
+        border-radius:8px; cursor:pointer;
+        border:1px solid ${isActive ? '#3b82f6' : '#334155'};
+        background:${isActive ? '#1e3a5f' : 'transparent'};
+        transition:all .15s;
+      `);
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'gs-noise';
+      radio.checked = isActive;
+      radio.style.accentColor = '#3b82f6';
+      radio.addEventListener('change', () => {
+        if (radio.checked) { this._setNoiseSuppression(on); this._closeSettings(); }
+      });
+      const lbl = document.createElement('span');
+      lbl.textContent = label;
+      lbl.style.fontSize = '14px';
+      row.append(radio, lbl);
+      nsOptions.appendChild(row);
+    });
+
+    const nsNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
+    nsNote.textContent = 'RNNoise (ML) removes background sounds like keyboard typing, fans, and traffic.';
+
+    panel.append(titleRow, sectionLabel, options, note, bwLabel, bwOptions, bwNote, nsLabel, nsOptions, nsNote);
     modal.appendChild(panel);
     document.body.appendChild(modal);
     this._settingsEl = modal;
@@ -954,10 +1002,75 @@ export class WebRTCManager {
         }
       }
     } finally {
+      // Route mic audio through the denoiser before peers start sending,
+      // so new connections carry the cleaned track.
+      if (this.localStream?.getAudioTracks().length) {
+        try { await this._setupAudioPipeline(); } catch (e) { console.warn('Audio pipeline:', e); }
+      }
       // Unblock proximity/offer handling whether media succeeded or not,
       // so a camera-less machine can still receive others' video & audio.
       this._mediaSettled = true;
     }
+  }
+
+  // ── noise suppression ───────────────────────────────────────────────────────
+
+  async _setupAudioPipeline() {
+    const audio = this.localStream.getAudioTracks()[0];
+    if (!audio) return;
+    this._rawAudioTrack = audio;
+    if (this.noiseSuppression) {
+      try { await this._ensureDenoiser(); }
+      catch (e) { console.warn('RNNoise init failed, using raw mic:', e); this._cleanAudioTrack = null; }
+    }
+    this._applyAudioTrack();
+  }
+
+  // Build the RNNoise AudioWorklet graph: raw mic → denoiser → destination.
+  // RNNoise expects 48 kHz, so the context is forced to that rate.
+  async _ensureDenoiser() {
+    if (this._audioCtx && this._cleanAudioTrack) return;
+    const ctx = new AudioContext({ sampleRate: 48000 });
+    await ctx.audioWorklet.addModule(rnnoiseWorkletUrl);
+    const wasmBinary = await loadRnnoise({ url: rnnoiseWasmUrl, simdUrl: rnnoiseSimdWasmUrl });
+    const node = new RnnoiseWorkletNode(ctx, { maxChannels: 1, wasmBinary });
+    const src = ctx.createMediaStreamSource(new MediaStream([this._rawAudioTrack]));
+    const dest = ctx.createMediaStreamDestination();
+    src.connect(node).connect(dest);
+    if (ctx.state === 'suspended') await ctx.resume();
+    this._audioCtx = ctx;
+    this._denoiseNode = node;
+    this._cleanAudioTrack = dest.stream.getAudioTracks()[0];
+  }
+
+  // Put the active audio track (clean or raw) into the local stream and all
+  // peer senders, preserving the current mute state.
+  _applyAudioTrack() {
+    const active = (this.noiseSuppression && this._cleanAudioTrack)
+      ? this._cleanAudioTrack : this._rawAudioTrack;
+    if (!active) return;
+    active.enabled = !this.audioMuted;
+    if (this._rawAudioTrack && this._rawAudioTrack !== active) {
+      this._rawAudioTrack.enabled = true; // keep feeding the denoiser; output gates mute
+    }
+    const cur = this.localStream.getAudioTracks()[0];
+    if (cur && cur !== active) this.localStream.removeTrack(cur);
+    if (!this.localStream.getAudioTracks().includes(active)) this.localStream.addTrack(active);
+    this.peers.forEach(peer => {
+      const sender = peer.pc.getSenders().find(s => s.track?.kind === 'audio');
+      if (sender && sender.track !== active) sender.replaceTrack(active).catch(() => {});
+    });
+  }
+
+  async _setNoiseSuppression(on) {
+    if (on === this.noiseSuppression) return;
+    this.noiseSuppression = on;
+    localStorage.setItem('gs-noise', on ? 'on' : 'off');
+    if (on && !this._cleanAudioTrack && this._rawAudioTrack) {
+      try { await this._ensureDenoiser(); } catch (e) { console.warn('RNNoise init failed:', e); }
+    }
+    this._applyAudioTrack();
+    this._setStatus(on ? '🔇 Noise reduction on' : '🎙️ Noise reduction off', '#86efac');
   }
 
   // Wires a freshly acquired localStream into the local tile and reports
@@ -991,6 +1104,13 @@ export class WebRTCManager {
   async _retryMedia() {
     this.localStream?.getTracks().forEach(t => t.stop());
     this.localStream = null;
+    // Tear down the old denoiser graph so it rebuilds against the new mic
+    this._denoiseNode?.destroy?.();
+    this._audioCtx?.close?.();
+    this._audioCtx = null;
+    this._denoiseNode = null;
+    this._cleanAudioTrack = null;
+    this._rawAudioTrack = null;
     this._setStatus('🎤 Requesting media…', '#64748b');
 
     this._mediaReadyPromise = this._requestMedia();
@@ -1182,6 +1302,8 @@ export class WebRTCManager {
     if (this._onEscKey) document.removeEventListener('keydown', this._onEscKey);
     this.peers.forEach((_, id) => this.closePeer(id));
     this._stopScreenShare();
+    this._denoiseNode?.destroy?.();
+    this._audioCtx?.close?.();
     this.localStream?.getTracks().forEach(t => t.stop());
     this._filmstrip?.remove();
     this._bar?.remove();
