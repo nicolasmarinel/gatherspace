@@ -19,7 +19,20 @@ export class GameScene extends Phaser.Scene {
 
   create() {
     this._isMobile = navigator.maxTouchPoints > 0;
-    this.physics.world.setBounds(32, 32, MAP_WIDTH - 64, MAP_HEIGHT - 64);
+
+    // A custom background image (if present) defines the map size so it isn't
+    // stretched; otherwise fall back to the default procedural map dimensions.
+    this._hasBg = this.textures.exists('bg-map');
+    if (this._hasBg) {
+      const img = this.textures.get('bg-map').getSourceImage();
+      this.mapW = img.width;
+      this.mapH = img.height;
+    } else {
+      this.mapW = MAP_WIDTH;
+      this.mapH = MAP_HEIGHT;
+    }
+
+    this.physics.world.setBounds(32, 32, this.mapW - 64, this.mapH - 64);
 
     this._buildWorld();
     this._createLocalPlayer();
@@ -34,6 +47,12 @@ export class GameScene extends Phaser.Scene {
   // ── world ─────────────────────────────────────────────────────────────────
 
   _buildWorld() {
+    // Custom map image replaces the entire procedural scene
+    if (this._hasBg) {
+      this.add.image(this.mapW / 2, this.mapH / 2, 'bg-map').setDepth(0);
+      return;
+    }
+
     // Floor tiles
     for (let y = 0; y < MAP_HEIGHT; y += 64) {
       for (let x = 0; x < MAP_WIDTH; x += 64) {
@@ -139,7 +158,7 @@ export class GameScene extends Phaser.Scene {
 
   _createLocalPlayer() {
     this.localPlayer = new LocalPlayer(
-      this, MAP_WIDTH / 2, MAP_HEIGHT / 2, this.avatarIndex, this.playerName
+      this, this.mapW / 2, this.mapH / 2, this.avatarIndex, this.playerName
     );
   }
 
@@ -178,7 +197,7 @@ export class GameScene extends Phaser.Scene {
   // ── camera ────────────────────────────────────────────────────────────────
 
   _setupCamera() {
-    this.cameras.main.setBounds(0, 0, MAP_WIDTH, MAP_HEIGHT);
+    this.cameras.main.setBounds(0, 0, this.mapW, this.mapH);
     this.cameras.main.startFollow(this.localPlayer.sprite, true, 0.08, 0.08);
     this.cameras.main.setZoom(1.25);
   }

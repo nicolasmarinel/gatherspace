@@ -4,6 +4,16 @@ import { AVATAR_COLORS } from '../constants.js';
 export class BootScene extends Phaser.Scene {
   constructor() { super('Boot'); }
 
+  preload() {
+    // Optional custom map image. Drop a file at client/public/background.png
+    // to use it as the whole map; if it's absent the procedural scene is used.
+    // A 404 here is harmless — the texture simply won't exist.
+    this.load.image('bg-map', '/background.png');
+    this.load.on('loaderror', (file) => {
+      if (file.key === 'bg-map') console.info('No custom background.png — using the built-in scene.');
+    });
+  }
+
   create() {
     this.makeFloor();
     this.makeWall();
