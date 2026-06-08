@@ -77,6 +77,7 @@ export class MapEditor {
       this._btn('↓ Back',  () => this._changeZ('backward')),
       this._btn('⤓ Bottom', () => this._changeZ('back')),
     ];
+    this._aboveBtn = this._btn('Above avatars', () => this._toggleAbove());
 
     // Collision tools
     this._paintBtn = this._btn('🟥 Paint', () => { this.erase = false; this._syncTools(); });
@@ -88,7 +89,7 @@ export class MapEditor {
     exit.style.marginLeft = 'auto';
 
     this._bar.append(title, this._tabObjects, this._tabColl,
-      this._delBtn, ...this._zBtns, this._paintBtn, this._eraseBtn, this._hint, exit);
+      this._delBtn, ...this._zBtns, this._aboveBtn, this._paintBtn, this._eraseBtn, this._hint, exit);
     document.body.appendChild(this._bar);
   }
 
@@ -198,6 +199,12 @@ export class MapEditor {
       b.disabled = !this.selectedId;
       b.style.opacity = this.selectedId ? '1' : '0.5';
     });
+    const sel = this.selectedId ? this.scene.mapObjects.get(this.selectedId)?.getData('obj') : null;
+    this._aboveBtn.style.display = obj ? '' : 'none';
+    this._aboveBtn.disabled = !sel;
+    this._aboveBtn.style.opacity = sel ? '1' : '0.5';
+    this._aboveBtn.style.background = sel?.above ? '#14532d' : '#1e293b';
+    this._aboveBtn.textContent = sel?.above ? '👤 Above avatars ✓' : '👤 Above avatars';
     this._paintBtn.style.display = obj ? 'none' : '';
     this._eraseBtn.style.display = obj ? 'none' : '';
     this._paintBtn.style.background = this.erase ? '#1e293b' : '#1e3a5f';
@@ -258,6 +265,13 @@ export class MapEditor {
       nz = below.length > 1 ? (below[0] + below[1]) / 2 : below[0] - 1;
     }
     this.scene.socket?.sendMapZ(this.selectedId, nz);
+  }
+
+  _toggleAbove() {
+    if (!this.selectedId) return;
+    const o = this.scene.mapObjects.get(this.selectedId)?.getData('obj');
+    if (!o) return;
+    this.scene.socket?.sendMapAbove(this.selectedId, !o.above);
   }
 
   // ── pointer interactions ─────────────────────────────────────────────────────

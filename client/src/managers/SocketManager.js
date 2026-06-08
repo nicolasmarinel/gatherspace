@@ -86,6 +86,7 @@ export class SocketManager {
     this.socket.on('map-object-added',   (o)   => this.scene.onMapObjectAdded?.(o));
     this.socket.on('map-object-moved',   (o)   => this.scene.onMapObjectMoved?.(o));
     this.socket.on('map-object-z',       ({ id, z }) => this.scene.onMapObjectZ?.(id, z));
+    this.socket.on('map-object-above',   ({ id, above }) => this.scene.onMapObjectAbove?.(id, above));
     this.socket.on('map-object-removed', ({ id }) => this.scene.onMapObjectRemoved?.(id));
     this.socket.on('map-collision',      ({ cells }) => this.scene.onMapCollision?.(cells));
 
@@ -120,6 +121,7 @@ export class SocketManager {
   sendMapAdd(obj)       { this.socket?.emit('map-add-object', obj); }
   sendMapMove(obj)      { this.socket?.emit('map-move-object', obj); }
   sendMapZ(id, z)       { this.socket?.emit('map-object-z', { id, z }); }
+  sendMapAbove(id, above) { this.socket?.emit('map-object-above', { id, above }); }
   sendMapDelete(id)     { this.socket?.emit('map-delete-object', { id }); }
   sendMapCollision(cells) { this.socket?.emit('map-collision', { cells }); }
 

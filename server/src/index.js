@@ -37,7 +37,8 @@ function normalizeMap(m) {
   let col = m.collisions;
   if (typeof col === 'string') col = Array.from(Buffer.from(col, 'base64'));
   const placements = (m.placements || []).map((p, i) => ({
-    id: p.id || `o${i}`, f: p.f, x: p.x, y: p.y, ox: p.ox || 0, oy: p.oy || 0, z: p.z || 0,
+    id: p.id || `o${i}`, f: p.f, x: p.x, y: p.y, ox: p.ox || 0, oy: p.oy || 0,
+    z: p.z || 0, above: !!p.above,
   }));
   let maxId = 0;
   placements.forEach(p => { const n = parseInt(String(p.id).replace(/\D/g, ''), 10); if (n > maxId) maxId = n; });
@@ -121,9 +122,9 @@ io.on('connection', (socket) => {
   });
 
   // ── map editing (shared across everyone; broadcast to all incl. sender) ──
-  socket.on('map-add-object', ({ f, x, y, ox, oy, z }) => {
+  socket.on('map-add-object', ({ f, x, y, ox, oy, z, above }) => {
     if (typeof f !== 'string') return;
-    const obj = { id: `o${mapState.nextId++}`, f, x: x | 0, y: y | 0, ox: ox || 0, oy: oy || 0, z: z || 0 };
+    const obj = { id: `o${mapState.nextId++}`, f, x: x | 0, y: y | 0, ox: ox || 0, oy: oy || 0, z: z || 0, above: !!above };
     mapState.placements.push(obj);
     io.emit('map-object-added', obj);
     scheduleSave();
@@ -144,6 +145,14 @@ io.on('connection', (socket) => {
     if (!obj || typeof z !== 'number') return;
     obj.z = z;
     io.emit('map-object-z', { id, z });
+    scheduleSave();
+  });
+
+  socket.on('map-object-above', ({ id, above }) => {
+    const obj = mapState.placements.find(p => p.id === id);
+    if (!obj) return;
+    obj.above = !!above;
+    io.emit('map-object-above', { id, above: obj.above });
     scheduleSave();
   });
 

@@ -115,11 +115,13 @@ export class GameScene extends Phaser.Scene {
     this.mapEditor?.onMapReloaded();
   }
 
-  // Objects are layered by their z value, mapped into the band (1,2) so they
-  // always sit above the background (0) and below players (3+). Monotonic in z
-  // and bounded, so any z (incl. negatives / large "to front" values) is safe.
-  _objDepth(z) {
-    return 1.5 + Math.atan((z || 0) / 500) / Math.PI; // → (1, 2)
+  // Objects layer by their z value. Normal objects sit in the band (1,2) —
+  // above the background (0), below players (3+). Objects flagged `above` sit
+  // in (5,6) — above players (so avatars pass behind them), below the HUD (10).
+  // atan keeps it monotonic in z and bounded for any z value.
+  _objDepth(z, above) {
+    const base = above ? 5.5 : 1.5;
+    return base + Math.atan((z || 0) / 500) / Math.PI;
   }
 
   _addMapObjectSprite(o) {
@@ -131,7 +133,7 @@ export class GameScene extends Phaser.Scene {
     const img = this.add.image(px, py, key).setOrigin(0, 0);
     img.setData('mapId', o.id);
     img.setData('obj', o);
-    img.setDepth(this._objDepth(o.z));
+    img.setDepth(this._objDepth(o.z, o.above));
     this.mapObjects.set(o.id, img);
     return img;
   }
@@ -139,8 +141,18 @@ export class GameScene extends Phaser.Scene {
   onMapObjectZ(id, z) {
     const img = this.mapObjects?.get(id);
     if (!img) return;
-    img.getData('obj').z = z;
-    img.setDepth(this._objDepth(z));
+    const o = img.getData('obj');
+    o.z = z;
+    img.setDepth(this._objDepth(z, o.above));
+  }
+
+  onMapObjectAbove(id, above) {
+    const img = this.mapObjects?.get(id);
+    if (!img) return;
+    const o = img.getData('obj');
+    o.above = above;
+    img.setDepth(this._objDepth(o.z, above));
+    if (this.mapEditor?.selectedId === id) this.mapEditor._syncTools();
   }
 
   onMapObjectAdded(o) {
