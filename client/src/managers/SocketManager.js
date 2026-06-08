@@ -81,6 +81,13 @@ export class SocketManager {
     this.socket.on('screen-answer', (d) => this.scene.webRTC?.onScreenAnswer(d));
     this.socket.on('screen-ice',    (d) => this.scene.webRTC?.onScreenIce(d));
 
+    // Shared map state + live edits
+    this.socket.on('map-state',          (m)   => this.scene.onMapState?.(m));
+    this.socket.on('map-object-added',   (o)   => this.scene.onMapObjectAdded?.(o));
+    this.socket.on('map-object-moved',   (o)   => this.scene.onMapObjectMoved?.(o));
+    this.socket.on('map-object-removed', ({ id }) => this.scene.onMapObjectRemoved?.(id));
+    this.socket.on('map-collision',      ({ cells }) => this.scene.onMapCollision?.(cells));
+
     this.socket.on('disconnect', (reason) => console.log('Socket disconnected:', reason));
     this.socket.on('connect_error', (err) => console.error('Connection error:', err));
   }
@@ -107,6 +114,12 @@ export class SocketManager {
   sendScreenOffer(targetId, offer)   { this.socket?.emit('screen-offer',  { targetId, offer }); }
   sendScreenAnswer(targetId, answer) { this.socket?.emit('screen-answer', { targetId, answer }); }
   sendScreenIce(targetId, candidate) { this.socket?.emit('screen-ice',    { targetId, candidate }); }
+
+  // Map editing
+  sendMapAdd(obj)       { this.socket?.emit('map-add-object', obj); }
+  sendMapMove(obj)      { this.socket?.emit('map-move-object', obj); }
+  sendMapDelete(id)     { this.socket?.emit('map-delete-object', { id }); }
+  sendMapCollision(cells) { this.socket?.emit('map-collision', { cells }); }
 
   get id() { return this.socket?.id; }
 

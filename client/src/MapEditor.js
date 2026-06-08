@@ -1,0 +1,401 @@
+// Live, shared map editor. Open to anyone in the space. All edits go through
+// the server (authoritative + persisted) and broadcast to everyone, so the
+// scene's onMap* handlers do the actual rendering — this class only drives the
+// UI and turns pointer gestures into socket edits.
+
+import gatherMap from './gatherMap.js';
+
+function mk(tag, css = '') {
+  const el = document.createElement(tag);
+  if (css) el.style.cssText = css.replace(/\s+/g, ' ').trim();
+  return el;
+}
+
+export class MapEditor {
+  constructor(scene) {
+    this.scene = scene;
+    this.active = false;
+    this.mode = 'objects';       // 'objects' | 'collisions'
+    this.brush = null;           // object filename to place, or null = select/move
+    this.erase = false;          // collision sub-mode
+    this.selectedId = null;
+    this._drag = null;           // active object drag
+    this._pan = null;            // active camera pan-drag
+    this._painting = false;
+    this._paintBatch = [];
+
+    this._buildToggle();
+    this._buildToolbar();
+    this._buildPalette();
+    this._overlay = scene.add.graphics().setDepth(8);
+
+    // Pointer + key wiring (handlers no-op unless active)
+    this._onDown = (p) => this._pointerDown(p);
+    this._onMove = (p) => this._pointerMove(p);
+    this._onUp = (p) => this._pointerUp(p);
+    scene.input.on('pointerdown', this._onDown);
+    scene.input.on('pointermove', this._onMove);
+    scene.input.on('pointerup', this._onUp);
+    this._onKey = (e) => this._keydown(e);
+    document.addEventListener('keydown', this._onKey);
+  }
+
+  // ── DOM ───────────────────────────────────────────────────────────────────
+
+  _buildToggle() {
+    this._toggle = mk('button', `
+      position:fixed; bottom:14px; right:14px; z-index:110;
+      background:#1e293b; border:1px solid #334155; color:#e2e8f0;
+      font-family:monospace; font-size:13px; padding:8px 12px; border-radius:10px;
+      cursor:pointer;
+    `);
+    this._toggle.textContent = '🛠 Edit Map';
+    this._toggle.addEventListener('click', () => this.active ? this.exit() : this.enter());
+    document.body.appendChild(this._toggle);
+  }
+
+  _buildToolbar() {
+    this._bar = mk('div', `
+      position:fixed; top:0; left:0; right:0; z-index:150; display:none;
+      align-items:center; gap:10px; padding:8px 14px;
+      background:#0f172aee; border-bottom:1px solid #334155;
+      font-family:monospace; color:#e2e8f0; font-size:13px;
+    `);
+
+    const title = mk('span', 'font-weight:bold; color:#60a5fa;');
+    title.textContent = '🛠 Map Maker';
+
+    // Mode tabs
+    this._tabObjects = this._tab('Objects', () => this.setMode('objects'));
+    this._tabColl = this._tab('Collisions', () => this.setMode('collisions'));
+
+    // Object tools
+    this._delBtn = this._btn('🗑 Delete', () => this.deleteSelected());
+
+    // Collision tools
+    this._paintBtn = this._btn('🟥 Paint', () => { this.erase = false; this._syncTools(); });
+    this._eraseBtn = this._btn('⬜ Erase', () => { this.erase = true; this._syncTools(); });
+
+    this._hint = mk('span', 'color:#64748b; flex:1;');
+
+    const exit = this._btn('✓ Done', () => this.exit());
+    exit.style.marginLeft = 'auto';
+
+    this._bar.append(title, this._tabObjects, this._tabColl,
+      this._delBtn, this._paintBtn, this._eraseBtn, this._hint, exit);
+    document.body.appendChild(this._bar);
+  }
+
+  _tab(label, fn) {
+    const b = this._btn(label, fn);
+    b.dataset.tab = '1';
+    return b;
+  }
+
+  _btn(label, fn) {
+    const b = mk('button', `
+      background:#1e293b; border:1px solid #334155; color:#e2e8f0;
+      font-family:monospace; font-size:12px; padding:6px 10px; border-radius:8px; cursor:pointer;
+    `);
+    b.textContent = label;
+    b.addEventListener('click', () => { fn(); b.blur(); });
+    return b;
+  }
+
+  _buildPalette() {
+    this._palette = mk('div', `
+      position:fixed; top:46px; left:0; bottom:0; width:132px; z-index:150; display:none;
+      background:#0f172aee; border-right:1px solid #334155; overflow-y:auto; padding:8px;
+      scrollbar-width:thin; scrollbar-color:#334155 transparent;
+    `);
+
+    // "Select / move" mode (no brush)
+    const selectBtn = mk('button', `
+      width:100%; background:#1e293b; border:1px solid #334155; color:#e2e8f0;
+      font-family:monospace; font-size:12px; padding:8px; border-radius:8px; cursor:pointer;
+      margin-bottom:8px;
+    `);
+    selectBtn.textContent = '↖ Select / Move';
+    selectBtn.addEventListener('click', () => this.setBrush(null));
+    this._palette.appendChild(selectBtn);
+
+    const grid = mk('div', 'display:flex; flex-wrap:wrap; gap:6px; justify-content:center;');
+    this._paletteItems = new Map();
+    gatherMap.images.forEach(f => {
+      const cell = mk('div', `
+        width:52px; height:52px; border:2px solid transparent; border-radius:6px;
+        background:#1e293b; cursor:pointer; display:flex; align-items:center; justify-content:center;
+        overflow:hidden;
+      `);
+      cell.title = f;
+      const img = document.createElement('img');
+      img.src = `/objects/${f}`;
+      img.style.cssText = 'max-width:48px; max-height:48px; image-rendering:pixelated;';
+      cell.appendChild(img);
+      cell.addEventListener('click', () => this.setBrush(f));
+      this._paletteItems.set(f, cell);
+      grid.appendChild(cell);
+    });
+    this._palette.appendChild(grid);
+    document.body.appendChild(this._palette);
+  }
+
+  // ── mode / tool state ───────────────────────────────────────────────────────
+
+  enter() {
+    this.active = true;
+    this.scene.cameras.main.stopFollow();
+    this._toggle.textContent = '✓ Done';
+    this._toggle.style.background = '#14532d';
+    this._bar.style.display = 'flex';
+    this.setMode(this.mode);
+  }
+
+  exit() {
+    this.active = false;
+    this.deselect();
+    this._painting = false; this._drag = null; this._pan = null;
+    this._toggle.textContent = '🛠 Edit Map';
+    this._toggle.style.background = '#1e293b';
+    this._bar.style.display = 'none';
+    this._palette.style.display = 'none';
+    this._overlay.clear();
+    const lp = this.scene.localPlayer;
+    if (lp) this.scene.cameras.main.startFollow(lp.sprite, true, 0.08, 0.08);
+  }
+
+  setMode(mode) {
+    this.mode = mode;
+    this.deselect();
+    this._palette.style.display = (mode === 'objects') ? 'block' : 'none';
+    this._syncTools();
+    this.redrawOverlay();
+  }
+
+  setBrush(f) {
+    this.brush = f;
+    this.deselect();
+    this._paletteItems.forEach((cell, key) =>
+      cell.style.borderColor = (key === f) ? '#3b82f6' : 'transparent');
+    this._syncTools();
+  }
+
+  _syncTools() {
+    const obj = this.mode === 'objects';
+    this._tabObjects.style.background = obj ? '#1e3a5f' : '#1e293b';
+    this._tabColl.style.background = obj ? '#1e293b' : '#1e3a5f';
+    this._delBtn.style.display = obj ? '' : 'none';
+    this._delBtn.disabled = !this.selectedId;
+    this._delBtn.style.opacity = this.selectedId ? '1' : '0.5';
+    this._paintBtn.style.display = obj ? 'none' : '';
+    this._eraseBtn.style.display = obj ? 'none' : '';
+    this._paintBtn.style.background = this.erase ? '#1e293b' : '#1e3a5f';
+    this._eraseBtn.style.background = this.erase ? '#1e3a5f' : '#1e293b';
+    if (obj) {
+      this._hint.textContent = this.brush
+        ? 'Click to place · pick "Select / Move" to edit existing'
+        : 'Click an object to select · drag to move · empty drag pans · WASD/arrows pan';
+    } else {
+      this._hint.textContent = 'Drag over tiles to ' + (this.erase ? 'clear' : 'add') + ' collision · WASD/arrows pan';
+    }
+  }
+
+  // ── selection ───────────────────────────────────────────────────────────────
+
+  selectObject(id) {
+    this.deselect();
+    const img = this.scene.mapObjects.get(id);
+    if (!img) return;
+    this.selectedId = id;
+    img.setTint(0x66aaff);
+    this._syncTools();
+  }
+
+  deselect() {
+    if (this.selectedId) {
+      const img = this.scene.mapObjects.get(this.selectedId);
+      img?.clearTint();
+    }
+    this.selectedId = null;
+    if (this._delBtn) this._syncTools();
+  }
+
+  deleteSelected() {
+    if (!this.selectedId) return;
+    this.scene.socket?.sendMapDelete(this.selectedId);
+    this.deselect();
+  }
+
+  // ── pointer interactions ─────────────────────────────────────────────────────
+
+  _tileAt(wx, wy) {
+    const T = this.scene._mapTile;
+    const col = Math.floor(wx / T), row = Math.floor(wy / T);
+    return { col, row, index: row * this.scene._mapTilesW + col };
+  }
+
+  _hitTest(wx, wy) {
+    let best = null, bestDepth = -Infinity;
+    this.scene.mapObjects.forEach((img, id) => {
+      const b = img.getBounds();
+      if (wx >= b.x && wx <= b.right && wy >= b.y && wy <= b.bottom && img.depth > bestDepth) {
+        best = id; bestDepth = img.depth;
+      }
+    });
+    return best;
+  }
+
+  _pointerDown(p) {
+    if (!this.active) return;
+    const wx = p.worldX, wy = p.worldY;
+
+    if (this.mode === 'collisions') {
+      this._painting = true;
+      this._paintBatch = [];
+      this._paintAt(wx, wy);
+      return;
+    }
+
+    // objects mode
+    if (this.brush) {
+      const { col, row } = this._tileAt(wx, wy);
+      this.scene.socket?.sendMapAdd({ f: this.brush, x: col, y: row, ox: 0, oy: 0, z: 0 });
+      return;
+    }
+
+    const hit = this._hitTest(wx, wy);
+    if (hit) {
+      this.selectObject(hit);
+      const img = this.scene.mapObjects.get(hit);
+      this._drag = { id: hit, offX: wx - img.x, offY: wy - img.y, moved: false };
+    } else {
+      this.deselect();
+      this._pan = { x: p.x, y: p.y };
+    }
+  }
+
+  _pointerMove(p) {
+    if (!this.active) return;
+
+    if (this._painting) { this._paintAt(p.worldX, p.worldY); return; }
+
+    if (this._drag) {
+      const img = this.scene.mapObjects.get(this._drag.id);
+      if (img) {
+        img.setPosition(p.worldX - this._drag.offX, p.worldY - this._drag.offY);
+        img.setDepth(3 + (img.y + img.height) / 10000);
+        this._drag.moved = true;
+      }
+      return;
+    }
+
+    if (this._pan) {
+      const cam = this.scene.cameras.main;
+      cam.scrollX -= (p.x - this._pan.x) / cam.zoom;
+      cam.scrollY -= (p.y - this._pan.y) / cam.zoom;
+      this._pan = { x: p.x, y: p.y };
+    }
+  }
+
+  _pointerUp() {
+    if (!this.active) return;
+
+    if (this._painting) {
+      this._painting = false;
+      if (this._paintBatch.length) this.scene.socket?.sendMapCollision(this._paintBatch);
+      this._paintBatch = [];
+      return;
+    }
+
+    if (this._drag) {
+      const img = this.scene.mapObjects.get(this._drag.id);
+      if (img && this._drag.moved) {
+        const o = img.getData('obj');
+        const T = this.scene._mapTile;
+        const x = Math.round((img.x - (o.ox || 0)) / T);
+        const y = Math.round((img.y - (o.oy || 0)) / T);
+        this.scene.socket?.sendMapMove({ id: this._drag.id, x, y, ox: o.ox || 0, oy: o.oy || 0 });
+      }
+      this._drag = null;
+      return;
+    }
+
+    this._pan = null;
+  }
+
+  // Paint/erase a single tile (optimistic local apply + batched send on pointerup)
+  _paintAt(wx, wy) {
+    const { col, row, index } = this._tileAt(wx, wy);
+    if (col < 0 || row < 0 || col >= this.scene._mapTilesW || row >= this.scene._mapTilesH) return;
+    const state = this.scene.collisionState;
+    if (!state) return;
+    const solid = this.erase ? 0 : 1;
+    if (state[index] === solid) return;
+    state[index] = solid;
+    if (solid) this.scene._addCollisionZone(index); else this.scene._removeCollisionZone(index);
+    this._paintBatch.push({ i: index, solid });
+    this.redrawOverlay();
+  }
+
+  _keydown(e) {
+    if (!this.active) return;
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && this.selectedId) {
+      e.preventDefault();
+      this.deleteSelected();
+    } else if (e.key === 'Escape') {
+      this.exit();
+    }
+  }
+
+  // Pan with the movement keys while editing
+  updatePan(delta) {
+    if (!this.active) return;
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    const cam = this.scene.cameras.main;
+    const c = this.scene.cursors, w = this.scene.wasd;
+    const sp = 12 * (delta / 16) / cam.zoom;
+    let dx = 0, dy = 0;
+    if (c.left.isDown || w.left.isDown) dx -= sp;
+    if (c.right.isDown || w.right.isDown) dx += sp;
+    if (c.up.isDown || w.up.isDown) dy -= sp;
+    if (c.down.isDown || w.down.isDown) dy += sp;
+    if (dx) cam.scrollX += dx;
+    if (dy) cam.scrollY += dy;
+  }
+
+  // ── collision overlay ─────────────────────────────────────────────────────
+
+  redrawOverlay() {
+    const g = this._overlay;
+    g.clear();
+    if (!this.active || this.mode !== 'collisions' || !this.scene.collisionState) return;
+    const T = this.scene._mapTile, W = this.scene._mapTilesW, H = this.scene._mapTilesH;
+    g.lineStyle(1, 0xffffff, 0.12);
+    for (let c = 0; c <= W; c++) g.lineBetween(c * T, 0, c * T, H * T);
+    for (let r = 0; r <= H; r++) g.lineBetween(0, r * T, W * T, r * T);
+    g.fillStyle(0xef4444, 0.35);
+    const st = this.scene.collisionState;
+    for (let i = 0; i < st.length; i++) {
+      if (st[i]) g.fillRect((i % W) * T, Math.floor(i / W) * T, T, T);
+    }
+  }
+
+  // Called after a full map reload (e.g., reconnect) to refresh the overlay
+  onMapReloaded() {
+    if (this.active) this.redrawOverlay();
+  }
+
+  destroy() {
+    this.scene.input.off('pointerdown', this._onDown);
+    this.scene.input.off('pointermove', this._onMove);
+    this.scene.input.off('pointerup', this._onUp);
+    document.removeEventListener('keydown', this._onKey);
+    this._toggle?.remove();
+    this._bar?.remove();
+    this._palette?.remove();
+    this._overlay?.destroy();
+  }
+}

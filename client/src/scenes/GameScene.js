@@ -4,7 +4,7 @@ import { LocalPlayer } from '../objects/LocalPlayer.js';
 import { RemotePlayer } from '../objects/RemotePlayer.js';
 import { SocketManager } from '../managers/SocketManager.js';
 import { WebRTCManager } from '../managers/WebRTCManager.js';
-import gatherMap from '../gatherMap.js';
+import { MapEditor } from '../MapEditor.js';
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -44,16 +44,20 @@ export class GameScene extends Phaser.Scene {
     this._setupKeys();
     this._setupJoystick();
     this._setupZoom();
+    if (this._hasBg) this.mapEditor = new MapEditor(this);
   }
 
   // ── world ─────────────────────────────────────────────────────────────────
 
   _buildWorld() {
-    // Custom map image replaces the entire procedural scene
+    // Custom map image replaces the entire procedural scene. Objects and
+    // collisions are populated from the server's shared map (onMapState).
     if (this._hasBg) {
       this.add.image(this.mapW / 2, this.mapH / 2, 'bg-map').setDepth(0);
-      this._placeGatherObjects();
-      this._buildGatherCollisions();
+      this.mapObjects = new Map();          // id -> Phaser.Image
+      this.collisionState = null;           // Uint8Array of 0/1
+      this.collisionZones = new Map();      // tile index -> Zone
+      this._collisionGroup = this.physics.add.staticGroup();
       return;
     }
 
@@ -88,37 +92,94 @@ export class GameScene extends Phaser.Scene {
     this._buildKitchen();
   }
 
-  // ── imported Gather map ─────────────────────────────────────────────────────
+  // ── shared map (server-driven) ──────────────────────────────────────────────
 
-  _placeGatherObjects() {
-    const T = gatherMap.tile;
-    gatherMap.placements.forEach(p => {
-      const key = `obj:${p.f}`;
-      if (!this.textures.exists(key)) return;
-      const px = p.x * T + (p.ox || 0);
-      const py = p.y * T + (p.oy || 0);
-      const img = this.add.image(px, py, key).setOrigin(0, 0);
-      // Y-sort against players using the sprite's foot, so avatars pass
-      // behind tall objects and in front of ones below them.
-      img.setDepth(3 + (py + img.height) / 10000);
-    });
+  // Full snapshot from the server (on join, or after a reconnect)
+  onMapState(m) {
+    if (!this._hasBg) return;
+    this._mapTile = m.tile;
+    [this._mapTilesW, this._mapTilesH] = m.dims;
+
+    // Clear any prior render
+    this.mapObjects.forEach(s => s.destroy());
+    this.mapObjects.clear();
+    this.collisionZones.forEach(z => z.destroy());
+    this.collisionZones.clear();
+
+    m.placements.forEach(o => this._addMapObjectSprite(o));
+
+    this.collisionState = Uint8Array.from(atob(m.collisions), c => c.charCodeAt(0));
+    for (let i = 0; i < this.collisionState.length; i++) {
+      if (this.collisionState[i]) this._addCollisionZone(i);
+    }
+    this.mapEditor?.onMapReloaded();
   }
 
-  _buildGatherCollisions() {
-    const T = gatherMap.tile;
-    const [W, H] = gatherMap.dims;
-    const bytes = Uint8Array.from(atob(gatherMap.collisions), c => c.charCodeAt(0));
-    const group = this.physics.add.staticGroup();
-    for (let row = 0; row < H; row++) {
-      for (let col = 0; col < W; col++) {
-        if (bytes[row * W + col]) {
-          const zone = this.add.zone(col * T + T / 2, row * T + T / 2, T, T);
-          this.physics.add.existing(zone, true); // invisible static body
-          group.add(zone);
-        }
-      }
-    }
-    this._collisionGroup = group;
+  _addMapObjectSprite(o) {
+    const key = `obj:${o.f}`;
+    if (!this.textures.exists(key)) return null;
+    const T = this._mapTile;
+    const px = o.x * T + (o.ox || 0);
+    const py = o.y * T + (o.oy || 0);
+    const img = this.add.image(px, py, key).setOrigin(0, 0);
+    img.setData('mapId', o.id);
+    img.setData('obj', o);
+    // Y-sort against players using the sprite's foot
+    img.setDepth(3 + (py + img.height) / 10000);
+    this.mapObjects.set(o.id, img);
+    return img;
+  }
+
+  onMapObjectAdded(o) {
+    if (!this._hasBg) return;
+    if (!this.mapObjects.has(o.id)) this._addMapObjectSprite(o);
+  }
+
+  onMapObjectMoved({ id, x, y, ox, oy }) {
+    const img = this.mapObjects?.get(id);
+    if (!img) return;
+    const T = this._mapTile;
+    const px = x * T + (ox || 0);
+    const py = y * T + (oy || 0);
+    img.setPosition(px, py);
+    img.setDepth(3 + (py + img.height) / 10000);
+    const o = img.getData('obj');
+    Object.assign(o, { x, y, ox: ox || 0, oy: oy || 0 });
+  }
+
+  onMapObjectRemoved(id) {
+    const img = this.mapObjects?.get(id);
+    if (!img) return;
+    if (this.mapEditor?.selectedId === id) this.mapEditor.deselect();
+    img.destroy();
+    this.mapObjects.delete(id);
+  }
+
+  onMapCollision(cells) {
+    if (!this.collisionState) return;
+    cells.forEach(({ i, solid }) => {
+      this.collisionState[i] = solid ? 1 : 0;
+      if (solid) this._addCollisionZone(i); else this._removeCollisionZone(i);
+    });
+    this.mapEditor?.redrawOverlay();
+  }
+
+  _addCollisionZone(index) {
+    if (this.collisionZones.has(index)) return;
+    const T = this._mapTile, W = this._mapTilesW;
+    const col = index % W, row = Math.floor(index / W);
+    const zone = this.add.zone(col * T + T / 2, row * T + T / 2, T, T);
+    this.physics.add.existing(zone, true);
+    this._collisionGroup.add(zone);
+    this.collisionZones.set(index, zone);
+  }
+
+  _removeCollisionZone(index) {
+    const zone = this.collisionZones.get(index);
+    if (!zone) return;
+    this._collisionGroup.remove(zone);
+    zone.destroy();
+    this.collisionZones.delete(index);
   }
 
   _buildOffice() {
@@ -343,6 +404,7 @@ export class GameScene extends Phaser.Scene {
     this._joystickGfx = this.add.graphics().setScrollFactor(0).setDepth(50);
 
     this.input.on('pointerdown', (ptr) => {
+      if (this.mapEditor?.active) return; // editor owns pointer input
       if (!ptr.wasTouch || this._joystick.active) return;
       this._joystick.active = true;
       this._joystick.pointerId = ptr.id;
@@ -398,6 +460,14 @@ export class GameScene extends Phaser.Scene {
 
   update(_time, delta) {
     if (!this.localPlayer) return;
+
+    // Map-editor mode: avatar is parked; pan the camera with the keys instead
+    if (this.mapEditor?.active) {
+      this.localPlayer.sprite.setVelocity(0, 0);
+      this.mapEditor.updatePan(delta);
+      this.remotePlayers.forEach(rp => rp.update(delta));
+      return;
+    }
 
     // Freeze movement when the user is typing in a chat or settings input
     const tag = document.activeElement?.tagName;
@@ -470,5 +540,6 @@ export class GameScene extends Phaser.Scene {
     this.socket?.disconnect();
     this.webRTC?.destroy();
     this._zoomWidget?.remove();
+    this.mapEditor?.destroy();
   }
 }
