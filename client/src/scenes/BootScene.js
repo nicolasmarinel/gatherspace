@@ -1,6 +1,10 @@
 import Phaser from 'phaser';
 import { AVATAR_COLORS } from '../constants.js';
 import gatherMap from '../gatherMap.js';
+import {
+  N_COLORS, CUSTOM_AVATARS, FRAME_W, FRAME_H, POSES, DANCE_FRAMES,
+  sheetKey, walkAnimKey, danceAnimKey,
+} from '../avatars.js';
 
 export class BootScene extends Phaser.Scene {
   constructor() { super('Boot'); }
@@ -16,6 +20,12 @@ export class BootScene extends Phaser.Scene {
 
     // Imported Gather map object sprites (keyed by filename)
     gatherMap.images.forEach(f => this.load.image(`obj:${f}`, `/objects/${f}`));
+
+    // Custom Gather avatar spritesheets (16 frames of 32×64)
+    CUSTOM_AVATARS.forEach((a, j) => {
+      this.load.spritesheet(sheetKey(N_COLORS + j), a.sheet,
+        { frameWidth: FRAME_W, frameHeight: FRAME_H });
+    });
   }
 
   create() {
@@ -28,7 +38,29 @@ export class BootScene extends Phaser.Scene {
     this.makeTable();
     this.makeRug();
     this.makeAvatars();
+    this.makeCustomAvatarAnims();
     this.scene.start('Lobby');
+  }
+
+  // Walk + dance animations for each custom avatar sheet
+  makeCustomAvatarAnims() {
+    CUSTOM_AVATARS.forEach((_, j) => {
+      const idx = N_COLORS + j;
+      const key = sheetKey(idx);
+      if (!this.textures.exists(key)) return; // sheet failed to load
+      ['down', 'left', 'up', 'right'].forEach(dir => {
+        this.anims.create({
+          key: walkAnimKey(idx, dir),
+          frames: this.anims.generateFrameNumbers(key, { frames: POSES[dir].walk }),
+          frameRate: 6, repeat: -1,
+        });
+      });
+      this.anims.create({
+        key: danceAnimKey(idx),
+        frames: this.anims.generateFrameNumbers(key, { frames: DANCE_FRAMES }),
+        frameRate: 6, repeat: -1,
+      });
+    });
   }
 
   // ── textures ──────────────────────────────────────────────────────────────

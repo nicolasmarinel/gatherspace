@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { AVATAR_COLORS } from '../constants.js';
+import { CUSTOM_AVATARS, N_COLORS, FRAME_W, FRAME_H } from '../avatars.js';
 
 export class LobbyScene extends Phaser.Scene {
   constructor() {
@@ -54,6 +55,8 @@ export class LobbyScene extends Phaser.Scene {
       </label>
       <div style="font-size:13px;color:#94a3b8">AVATAR COLOR</div>
       <div id="gs-avatars" style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"></div>
+      <div id="gs-custom-label" style="font-size:13px;color:#94a3b8">CUSTOM AVATARS</div>
+      <div id="gs-custom" style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"></div>
       <button id="gs-join"
         style="background:#2563eb;color:#fff;border:none;border-radius:8px;
                padding:12px;font-size:17px;font-family:monospace;font-weight:bold;
@@ -61,6 +64,11 @@ export class LobbyScene extends Phaser.Scene {
         Join Space →
       </button>
     `;
+
+    // Clears the selection ring on every avatar button (colors + custom)
+    const clearSelection = () =>
+      card.querySelectorAll('#gs-avatars button, #gs-custom button')
+        .forEach(b => b.style.borderColor = 'transparent');
 
     // Avatar color picker
     const avatarRow = card.querySelector('#gs-avatars');
@@ -74,11 +82,38 @@ export class LobbyScene extends Phaser.Scene {
       `;
       btn.title = c.label;
       btn.addEventListener('click', () => {
-        avatarRow.querySelectorAll('button').forEach(b => b.style.borderColor = 'transparent');
+        clearSelection();
         btn.style.borderColor = '#fff';
         this.selectedAvatar = i;
       });
       avatarRow.appendChild(btn);
+    });
+
+    // Custom Gather-avatar picker — thumbnail shows the down-idle frame (frame 0)
+    const customRow = card.querySelector('#gs-custom');
+    if (!CUSTOM_AVATARS.length) {
+      card.querySelector('#gs-custom-label').style.display = 'none';
+    }
+    const SC = 1.5; // thumbnail scale
+    CUSTOM_AVATARS.forEach((a, j) => {
+      const idx = N_COLORS + j;
+      const btn = document.createElement('button');
+      btn.dataset.idx = idx;
+      btn.title = a.label;
+      btn.style.cssText = `
+        width:${FRAME_W * SC}px;height:${FRAME_H * SC}px;cursor:pointer;padding:0;
+        border:3px solid transparent;border-radius:8px;background:#0f172a;
+        background-image:url('${a.sheet}');
+        background-repeat:no-repeat;background-position:0 0;
+        background-size:auto ${FRAME_H * SC}px;
+        image-rendering:pixelated;transition:border-color .15s;
+      `;
+      btn.addEventListener('click', () => {
+        clearSelection();
+        btn.style.borderColor = '#fff';
+        this.selectedAvatar = idx;
+      });
+      customRow.appendChild(btn);
     });
 
     const joinBtn = card.querySelector('#gs-join');

@@ -65,8 +65,8 @@ export class SocketManager {
 
     this.socket.on('player-joined', (p) => this.scene.addRemotePlayer(p));
 
-    this.socket.on('player-moved', ({ id, x, y, direction, isMoving }) => {
-      this.scene.updateRemotePlayer(id, x, y, direction, isMoving);
+    this.socket.on('player-moved', ({ id, x, y, direction, isMoving, dancing }) => {
+      this.scene.updateRemotePlayer(id, x, y, direction, isMoving, dancing);
     });
 
     this.socket.on('player-left', (id) => this.scene.removeRemotePlayer(id));
@@ -85,9 +85,9 @@ export class SocketManager {
     this.socket.on('connect_error', (err) => console.error('Connection error:', err));
   }
 
-  sendMove(x, y, direction, isMoving) {
+  sendMove(x, y, direction, isMoving, dancing = false) {
     const now = Date.now();
-    this._pendingMove = { x, y, direction, isMoving };
+    this._pendingMove = { x, y, direction, isMoving, dancing };
     if (now - this._lastMoveSent >= 50) {
       this._flushMove();
     }

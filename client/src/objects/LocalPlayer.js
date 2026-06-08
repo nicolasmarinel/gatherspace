@@ -1,4 +1,7 @@
 import { PLAYER_SPEED } from '../constants.js';
+import {
+  isCustomAvatar, customAt, sheetKey, walkAnimKey, danceAnimKey, POSES, idleTextureArgs,
+} from '../avatars.js';
 
 export class LocalPlayer {
   constructor(scene, x, y, avatarIndex, name) {
@@ -7,13 +10,16 @@ export class LocalPlayer {
     this.name = name;
     this.direction = 'down';
     this.isMoving = false;
+    this.dancing = false;
     this._prevX = x;
     this._prevY = y;
     this._lastSentX = x;
     this._lastSentY = y;
     this._moved = false;
 
-    this.sprite = scene.physics.add.sprite(x, y, `avatar-${avatarIndex}-down`);
+    // Custom avatars are animated spritesheets; color avatars are static frames
+    this._custom = isCustomAvatar(avatarIndex) && !!customAt(avatarIndex);
+    this.sprite = scene.physics.add.sprite(x, y, ...idleTextureArgs(avatarIndex));
     this.sprite.setCollideWorldBounds(true);
     this.sprite.setDepth(4);
 
@@ -28,8 +34,9 @@ export class LocalPlayer {
   }
 
   // Returns true if position changed since last call.
-  // extVel = { vx, vy } from touch joystick — takes priority over arrow keys when set.
-  update(cursors, extVel = null) {
+  // extVel = { vx, vy } from touch joystick — takes priority over arrow keys.
+  // danceDown = dance key held (only dances while standing still).
+  update(cursors, extVel = null, danceDown = false) {
     let vx, vy;
 
     if (extVel) {
@@ -57,13 +64,10 @@ export class LocalPlayer {
     }
 
     this.sprite.setVelocity(vx, vy);
-    const nowMoving = vx !== 0 || vy !== 0;
+    this.isMoving = vx !== 0 || vy !== 0;
+    this.dancing = !this.isMoving && danceDown;
 
-    if (nowMoving !== this.isMoving || (nowMoving && this.direction !== this._lastDir)) {
-      this.sprite.setTexture(`avatar-${this.avatarIndex}-${this.direction}`);
-      this._lastDir = this.direction;
-    }
-    this.isMoving = nowMoving;
+    this._applyPose();
 
     const { x, y } = this.sprite;
     this.nameTag.setPosition(x, y - 36);
@@ -73,6 +77,22 @@ export class LocalPlayer {
     this._prevX = x;
     this._prevY = y;
     return moved;
+  }
+
+  _applyPose() {
+    if (this._custom) {
+      const i = this.avatarIndex;
+      if (this.dancing) {
+        this.sprite.play(danceAnimKey(i), true);
+      } else if (this.isMoving) {
+        this.sprite.play(walkAnimKey(i, this.direction), true);
+      } else {
+        this.sprite.stop();
+        this.sprite.setFrame(POSES[this.direction].idle);
+      }
+    } else {
+      this.sprite.setTexture(`avatar-${this.avatarIndex}-${this.direction}`);
+    }
   }
 
   destroy() {

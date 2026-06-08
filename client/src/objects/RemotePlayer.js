@@ -1,4 +1,7 @@
 import Phaser from 'phaser';
+import {
+  isCustomAvatar, customAt, walkAnimKey, danceAnimKey, POSES, idleTextureArgs,
+} from '../avatars.js';
 
 export class RemotePlayer {
   constructor(scene, id, x, y, avatarIndex, name) {
@@ -9,8 +12,12 @@ export class RemotePlayer {
     this.targetX = x;
     this.targetY = y;
     this.direction = 'down';
+    this.isMoving = false;
+    this.dancing = false;
 
-    this.sprite = scene.add.image(x, y, `avatar-${this.avatarIndex}-down`);
+    this._custom = isCustomAvatar(this.avatarIndex) && !!customAt(this.avatarIndex);
+    // add.sprite (not image) so custom avatars can play animations
+    this.sprite = scene.add.sprite(x, y, ...idleTextureArgs(this.avatarIndex));
     this.sprite.setDepth(4);
 
     this.nameTag = scene.add.text(x, y - 36, this.name, {
@@ -19,13 +26,12 @@ export class RemotePlayer {
     }).setOrigin(0.5).setDepth(4.1);
   }
 
-  moveTo(x, y, direction, _isMoving) {
+  moveTo(x, y, direction, isMoving, dancing) {
     this.targetX = x;
     this.targetY = y;
-    if (direction) {
-      this.direction = direction;
-      this.sprite.setTexture(`avatar-${this.avatarIndex}-${this.direction}`);
-    }
+    if (direction) this.direction = direction;
+    this.isMoving = !!isMoving;
+    this.dancing = !!dancing;
   }
 
   update(_delta) {
@@ -34,6 +40,23 @@ export class RemotePlayer {
     this.sprite.x = Phaser.Math.Linear(this.sprite.x, this.targetX, lerp);
     this.sprite.y = Phaser.Math.Linear(this.sprite.y, this.targetY, lerp);
     this.nameTag.setPosition(this.sprite.x, this.sprite.y - 36);
+    this._applyPose();
+  }
+
+  _applyPose() {
+    if (this._custom) {
+      const i = this.avatarIndex;
+      if (this.dancing) {
+        this.sprite.play(danceAnimKey(i), true);
+      } else if (this.isMoving) {
+        this.sprite.play(walkAnimKey(i, this.direction), true);
+      } else {
+        this.sprite.stop();
+        this.sprite.setFrame(POSES[this.direction].idle);
+      }
+    } else {
+      this.sprite.setTexture(`avatar-${this.avatarIndex}-${this.direction}`);
+    }
   }
 
   destroy() {

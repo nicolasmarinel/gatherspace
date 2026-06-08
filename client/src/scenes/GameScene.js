@@ -208,8 +208,8 @@ export class GameScene extends Phaser.Scene {
     this.remotePlayers.set(data.id, rp);
   }
 
-  updateRemotePlayer(id, x, y, direction, isMoving) {
-    this.remotePlayers.get(id)?.moveTo(x, y, direction, isMoving);
+  updateRemotePlayer(id, x, y, direction, isMoving, dancing) {
+    this.remotePlayers.get(id)?.moveTo(x, y, direction, isMoving, dancing);
   }
 
   removeRemotePlayer(id) {
@@ -268,6 +268,8 @@ export class GameScene extends Phaser.Scene {
   _setupKeys() {
     // Arrow keys only — letter keys stay free for typing in chat
     this.cursors = this.input.keyboard.createCursorKeys();
+    // Hold SPACE (while standing still) to dance
+    this.danceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
     // Clicking the game world drops focus from any text input (e.g. chat),
     // so movement resumes without needing to hunt for an escape.
@@ -348,15 +350,18 @@ export class GameScene extends Phaser.Scene {
     if (inputFocused) {
       this.localPlayer.sprite.setVelocity(0, 0);
     } else {
-      moved = this.localPlayer.update(this.cursors, this._getJoystickVelocity());
+      const danceDown = !!this.danceKey?.isDown;
+      moved = this.localPlayer.update(this.cursors, this._getJoystickVelocity(), danceDown);
     }
     if (this._joystick) this._drawJoystick();
 
-    if (moved) {
-      this.socket?.sendMove(
-        this.localPlayer.sprite.x, this.localPlayer.sprite.y,
-        this.localPlayer.direction, this.localPlayer.isMoving
-      );
+    // Broadcast on movement OR any pose change (direction / walking / dancing),
+    // so idle dances propagate even though position didn't change.
+    const lp = this.localPlayer;
+    const sig = `${lp.direction}|${lp.isMoving}|${lp.dancing}`;
+    if (moved || sig !== this._lastSendSig) {
+      this.socket?.sendMove(lp.sprite.x, lp.sprite.y, lp.direction, lp.isMoving, lp.dancing);
+      this._lastSendSig = sig;
     }
 
     this.remotePlayers.forEach(rp => rp.update(delta));

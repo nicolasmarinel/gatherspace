@@ -61,13 +61,14 @@ io.on('connection', (socket) => {
     console.log(`[${roomId}] ${name} joined (${socket.id}), room size: ${room.size}`);
   });
 
-  socket.on('move', ({ x, y, direction, isMoving }) => {
+  socket.on('move', ({ x, y, direction, isMoving, dancing }) => {
     if (!currentRoom || !playerData) return;
     playerData.x = x;
     playerData.y = y;
     playerData.direction = direction;
     playerData.isMoving = isMoving;
-    socket.to(currentRoom).emit('player-moved', { id: socket.id, x, y, direction, isMoving });
+    playerData.dancing = dancing;
+    socket.to(currentRoom).emit('player-moved', { id: socket.id, x, y, direction, isMoving, dancing });
   });
 
   // WebRTC signaling relay — server is a pure passthrough
