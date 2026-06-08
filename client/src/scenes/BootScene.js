@@ -49,10 +49,13 @@ export class BootScene extends Phaser.Scene {
       const key = sheetKey(idx);
       if (!this.textures.exists(key)) return; // sheet failed to load
       ['down', 'left', 'up', 'right'].forEach(dir => {
+        const p = POSES[dir];
+        // Insert the idle frame between steps: idle → stepA → idle → stepB
+        const seq = [p.idle, p.walk[0], p.idle, p.walk[1]];
         this.anims.create({
           key: walkAnimKey(idx, dir),
-          frames: this.anims.generateFrameNumbers(key, { frames: POSES[dir].walk }),
-          frameRate: 6, repeat: -1,
+          frames: this.anims.generateFrameNumbers(key, { frames: seq }),
+          frameRate: 8, repeat: -1,
         });
       });
       this.anims.create({
