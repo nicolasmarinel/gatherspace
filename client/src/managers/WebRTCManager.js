@@ -62,6 +62,11 @@ export class WebRTCManager {
     this._audioCtx = null;
     this._denoiseNode = null;
 
+    // Self-view mirror (local display only) + chosen input devices
+    this.mirrorSelf = localStorage.getItem('gs-mirror') === 'on';
+    this.videoDeviceId = localStorage.getItem('gs-cam') || null;
+    this.audioDeviceId = localStorage.getItem('gs-mic') || null;
+
     // _mediaSettled flips true once the media request resolves (success OR failure).
     // Proximity won't initiate, and incoming offers won't be answered, until then —
     // so a slow camera no longer drops the very first handshake.
@@ -456,6 +461,12 @@ export class WebRTCManager {
     this._overlay.append(header, body);
   }
 
+  // Mirror only the local camera's own preview (display-only, never the
+  // stream sent to others).
+  _maybeMirror(vid, key) {
+    if (key === 'local-cam' && this.mirrorSelf) vid.style.transform = 'scaleX(-1)';
+  }
+
   // A video element that always shows the whole frame, black-filling the rest
   _makeExpVideo(stream) {
     const vid = document.createElement('video');
@@ -493,6 +504,7 @@ export class WebRTCManager {
         background:#000; border:2px solid ${p.screen ? '#0ea5e9' : '#334155'};
       `);
       const vid = this._makeExpVideo(p.stream); // object-fit set by _applyGridLayout
+      this._maybeMirror(vid, p.key);
       cell.append(vid, this._cellLabel(p.name));
       cell.addEventListener('click', () => { this._focusedKey = p.key; this._buildExpandedGrid(); });
       grid.appendChild(cell);
@@ -554,7 +566,9 @@ export class WebRTCManager {
       cursor:pointer; background:#000;
       border:2px solid ${focused.screen ? '#0ea5e9' : '#3b82f6'};
     `);
-    stage.append(this._makeExpVideo(focused.stream), this._cellLabel(focused.name));
+    const stageVid = this._makeExpVideo(focused.stream);
+    this._maybeMirror(stageVid, focused.key);
+    stage.append(stageVid, this._cellLabel(focused.name));
     const hint = mk('div', `
       position:absolute; top:10px; right:12px; background:#000000aa;
       font-family:monospace; font-size:11px; color:#cbd5e1;
@@ -578,7 +592,9 @@ export class WebRTCManager {
         border:2px solid ${isFocused ? '#3b82f6' : (p.screen ? '#0ea5e9' : '#334155')};
         opacity:${isFocused ? '1' : '0.8'};
       `);
-      thumb.append(this._makeExpVideo(p.stream), this._cellLabel(p.name, true));
+      const thumbVid = this._makeExpVideo(p.stream);
+      this._maybeMirror(thumbVid, p.key);
+      thumb.append(thumbVid, this._cellLabel(p.name, true));
       thumb.addEventListener('click', (e) => {
         e.stopPropagation();
         this._focusedKey = isFocused ? null : p.key;
@@ -605,6 +621,7 @@ export class WebRTCManager {
     const panel = mk('div', `
       background:#1e293b; border:1px solid #334155; border-radius:16px;
       padding:24px; width:320px; font-family:monospace; color:#e2e8f0;
+      max-height:85vh; overflow-y:auto;
     `);
 
     // Title row
@@ -652,6 +669,18 @@ export class WebRTCManager {
     const note = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
     note.textContent = 'HD/Full HD requires a camera that supports it. Higher resolution uses more bandwidth.';
 
+    // Camera section: device picker + self-view mirror
+    const camLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
+    camLabel.textContent = 'CAMERA';
+    const camSelect = this._makeDeviceSelect('videoinput', (id) => {
+      this.videoDeviceId = id;
+      localStorage.setItem('gs-cam', id || '');
+      this._applyDeviceSelection();
+    });
+    const mirrorRow = this._toggleRadios('gs-mirror',
+      'Mirror my video (self-view only)', 'Don’t mirror',
+      this.mirrorSelf, (on) => this._setMirror(on));
+
     // Bandwidth section
     const bwLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
     bwLabel.textContent = 'BANDWIDTH';
@@ -689,9 +718,14 @@ export class WebRTCManager {
     const bwNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
     bwNote.textContent = 'Reduced lowers the bitrate and frame rate to ease strain on older machines and weak connections.';
 
-    // Noise suppression section
+    // Microphone section: device picker + noise suppression
     const nsLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
     nsLabel.textContent = 'MICROPHONE';
+    const micSelect = this._makeDeviceSelect('audioinput', (id) => {
+      this.audioDeviceId = id;
+      localStorage.setItem('gs-mic', id || '');
+      this._applyDeviceSelection();
+    });
 
     const NS_OPTIONS = [
       { on: true,  label: 'Noise reduction: On  (recommended)' },
@@ -725,7 +759,13 @@ export class WebRTCManager {
     const nsNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
     nsNote.textContent = 'RNNoise (ML) removes background sounds like keyboard typing, fans, and traffic.';
 
-    panel.append(titleRow, sectionLabel, options, note, bwLabel, bwOptions, bwNote, nsLabel, nsOptions, nsNote);
+    panel.append(
+      titleRow,
+      sectionLabel, options, note,
+      camLabel, camSelect, mirrorRow,
+      bwLabel, bwOptions, bwNote,
+      nsLabel, micSelect, nsOptions, nsNote,
+    );
     modal.appendChild(panel);
     document.body.appendChild(modal);
     this._settingsEl = modal;
@@ -979,8 +1019,14 @@ export class WebRTCManager {
     const { w, h, fps } = VIDEO_QUALITIES[this.currentQuality];
     try {
       this.localStream = await timed(navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps }, facingMode: 'user' },
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: {
+          width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps },
+          ...(this.videoDeviceId ? { deviceId: { exact: this.videoDeviceId } } : { facingMode: 'user' }),
+        },
+        audio: {
+          echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+          ...(this.audioDeviceId ? { deviceId: { exact: this.audioDeviceId } } : {}),
+        },
       }));
       this._showLocalStream();
     } catch (err) {
@@ -1073,6 +1119,123 @@ export class WebRTCManager {
     this._setStatus(on ? '🔇 Noise reduction on' : '🎙️ Noise reduction off', '#86efac');
   }
 
+  // ── mirror & device selection ───────────────────────────────────────────────
+
+  _setMirror(on) {
+    this.mirrorSelf = on;
+    localStorage.setItem('gs-mirror', on ? 'on' : 'off');
+    if (this._localTile?.video) this._localTile.video.style.transform = on ? 'scaleX(-1)' : '';
+    if (this._expandedOpen) this._buildExpandedGrid();
+  }
+
+  async _populateDeviceSelect(sel, kind) {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const currentId = kind === 'videoinput' ? this.videoDeviceId : this.audioDeviceId;
+      sel.innerHTML = '';
+      const def = document.createElement('option');
+      def.value = ''; def.textContent = 'System default';
+      sel.appendChild(def);
+      let n = 1;
+      devices.filter(d => d.kind === kind).forEach(d => {
+        const o = document.createElement('option');
+        o.value = d.deviceId;
+        o.textContent = d.label || `${kind === 'videoinput' ? 'Camera' : 'Microphone'} ${n++}`;
+        if (d.deviceId === currentId) o.selected = true;
+        sel.appendChild(o);
+      });
+      if (!currentId) def.selected = true;
+    } catch (e) { console.warn('enumerateDevices failed:', e); }
+  }
+
+  _makeDeviceSelect(kind, onChange) {
+    const sel = document.createElement('select');
+    sel.style.cssText = `
+      width:100%; background:#0f172a; color:#e2e8f0; border:1px solid #334155;
+      border-radius:8px; padding:8px; font-family:monospace; font-size:13px; margin-bottom:6px;
+    `;
+    this._populateDeviceSelect(sel, kind);
+    sel.addEventListener('change', () => onChange(sel.value || null));
+    return sel;
+  }
+
+  // Re-acquire the mic/camera using the chosen devices and hot-swap the tracks
+  // into the local stream, all peers, and (for audio) the denoiser.
+  async _applyDeviceSelection() {
+    const { w, h, fps } = VIDEO_QUALITIES[this.currentQuality];
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps },
+          ...(this.videoDeviceId ? { deviceId: { exact: this.videoDeviceId } } : { facingMode: 'user' }),
+        },
+        audio: {
+          echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+          ...(this.audioDeviceId ? { deviceId: { exact: this.audioDeviceId } } : {}),
+        },
+      });
+    } catch (e) {
+      console.error('Device switch failed:', e);
+      this._setStatus('⚠️ Could not switch device', '#fca5a5');
+      return;
+    }
+
+    if (!this.localStream) { this.localStream = stream; this._showLocalStream(); this._mediaSettled = true; }
+
+    const nv = stream.getVideoTracks()[0];
+    const na = stream.getAudioTracks()[0];
+
+    if (nv) {
+      this.localStream.getVideoTracks().forEach(t => { this.localStream.removeTrack(t); t.stop(); });
+      this.localStream.addTrack(nv);
+      if (this._localTile?.video) {
+        this._localTile.video.srcObject = this.localStream;
+        this._localTile.video.style.transform = this.mirrorSelf ? 'scaleX(-1)' : '';
+      }
+      this.peers.forEach(p => {
+        const s = p.pc.getSenders().find(s => s.track?.kind === 'video');
+        if (s) s.replaceTrack(nv).catch(() => {});
+      });
+    }
+
+    if (na) {
+      this._rawAudioTrack?.stop();
+      this._denoiseNode?.destroy?.();
+      this._audioCtx?.close?.();
+      this._audioCtx = null; this._denoiseNode = null; this._cleanAudioTrack = null;
+      this._rawAudioTrack = na;
+      if (this.noiseSuppression) { try { await this._ensureDenoiser(); } catch (e) { console.warn(e); } }
+      this._applyAudioTrack();
+    }
+
+    if (this._expandedOpen) this._buildExpandedGrid();
+    this._setStatus('🟢 Device updated', '#86efac');
+  }
+
+  // Two-option radio group (used for On/Off style settings). Closes the modal on pick.
+  _toggleRadios(name, onLabel, offLabel, isOn, onPick) {
+    const wrap = mk('div', 'display:flex;flex-direction:column;gap:6px;');
+    [[true, onLabel], [false, offLabel]].forEach(([val, label]) => {
+      const active = val === isOn;
+      const row = mk('label', `
+        display:flex; align-items:center; gap:10px; padding:10px 12px;
+        border-radius:8px; cursor:pointer;
+        border:1px solid ${active ? '#3b82f6' : '#334155'};
+        background:${active ? '#1e3a5f' : 'transparent'};
+      `);
+      const radio = document.createElement('input');
+      radio.type = 'radio'; radio.name = name; radio.checked = active;
+      radio.style.accentColor = '#3b82f6';
+      radio.addEventListener('change', () => { if (radio.checked) { onPick(val); this._closeSettings(); } });
+      const lbl = document.createElement('span');
+      lbl.textContent = label; lbl.style.fontSize = '14px';
+      row.append(radio, lbl);
+      wrap.appendChild(row);
+    });
+    return wrap;
+  }
+
   // Wires a freshly acquired localStream into the local tile and reports
   // real track state — this surfaces "camera held by another app" cases
   // where the stream resolves but no frames ever flow (LED stays off).
@@ -1080,6 +1243,7 @@ export class WebRTCManager {
     if (!this.localStream) return;
     const v = this._localTile.video;
     v.srcObject = this.localStream;
+    v.style.transform = this.mirrorSelf ? 'scaleX(-1)' : '';
     v.play?.().catch(() => { /* autoplay edge cases — harmless */ });
 
     const vt = this.localStream.getVideoTracks()[0];
