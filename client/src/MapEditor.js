@@ -71,6 +71,12 @@ export class MapEditor {
 
     // Object tools
     this._delBtn = this._btn('🗑 Delete', () => this.deleteSelected());
+    this._zBtns = [
+      this._btn('⤒ Front', () => this._changeZ('front')),
+      this._btn('↑ Fwd',   () => this._changeZ('forward')),
+      this._btn('↓ Back',  () => this._changeZ('backward')),
+      this._btn('⤓ Bottom', () => this._changeZ('back')),
+    ];
 
     // Collision tools
     this._paintBtn = this._btn('🟥 Paint', () => { this.erase = false; this._syncTools(); });
@@ -82,7 +88,7 @@ export class MapEditor {
     exit.style.marginLeft = 'auto';
 
     this._bar.append(title, this._tabObjects, this._tabColl,
-      this._delBtn, this._paintBtn, this._eraseBtn, this._hint, exit);
+      this._delBtn, ...this._zBtns, this._paintBtn, this._eraseBtn, this._hint, exit);
     document.body.appendChild(this._bar);
   }
 
@@ -187,6 +193,11 @@ export class MapEditor {
     this._delBtn.style.display = obj ? '' : 'none';
     this._delBtn.disabled = !this.selectedId;
     this._delBtn.style.opacity = this.selectedId ? '1' : '0.5';
+    this._zBtns.forEach(b => {
+      b.style.display = obj ? '' : 'none';
+      b.disabled = !this.selectedId;
+      b.style.opacity = this.selectedId ? '1' : '0.5';
+    });
     this._paintBtn.style.display = obj ? 'none' : '';
     this._eraseBtn.style.display = obj ? 'none' : '';
     this._paintBtn.style.background = this.erase ? '#1e293b' : '#1e3a5f';
@@ -224,6 +235,29 @@ export class MapEditor {
     if (!this.selectedId) return;
     this.scene.socket?.sendMapDelete(this.selectedId);
     this.deselect();
+  }
+
+  // Re-layer the selected object. z drives draw order across all objects.
+  _changeZ(op) {
+    if (!this.selectedId) return;
+    const sel = this.scene.mapObjects.get(this.selectedId)?.getData('obj');
+    if (!sel) return;
+    const zs = [...this.scene.mapObjects.values()].map(i => i.getData('obj').z);
+    let nz;
+    if (op === 'front') {
+      nz = Math.max(...zs) + 1;
+    } else if (op === 'back') {
+      nz = Math.min(...zs) - 1;
+    } else if (op === 'forward') {
+      const above = zs.filter(z => z > sel.z).sort((a, b) => a - b);
+      if (!above.length) return; // already on top
+      nz = above.length > 1 ? (above[0] + above[1]) / 2 : above[0] + 1;
+    } else { // backward
+      const below = zs.filter(z => z < sel.z).sort((a, b) => b - a);
+      if (!below.length) return; // already at bottom
+      nz = below.length > 1 ? (below[0] + below[1]) / 2 : below[0] - 1;
+    }
+    this.scene.socket?.sendMapZ(this.selectedId, nz);
   }
 
   // ── pointer interactions ─────────────────────────────────────────────────────

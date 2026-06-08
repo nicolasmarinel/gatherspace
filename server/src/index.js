@@ -139,6 +139,14 @@ io.on('connection', (socket) => {
     scheduleSave();
   });
 
+  socket.on('map-object-z', ({ id, z }) => {
+    const obj = mapState.placements.find(p => p.id === id);
+    if (!obj || typeof z !== 'number') return;
+    obj.z = z;
+    io.emit('map-object-z', { id, z });
+    scheduleSave();
+  });
+
   socket.on('map-delete-object', ({ id }) => {
     const i = mapState.placements.findIndex(p => p.id === id);
     if (i === -1) return;

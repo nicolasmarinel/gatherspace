@@ -115,6 +115,13 @@ export class GameScene extends Phaser.Scene {
     this.mapEditor?.onMapReloaded();
   }
 
+  // Objects are layered by their z value, mapped into the band (1,2) so they
+  // always sit above the background (0) and below players (3+). Monotonic in z
+  // and bounded, so any z (incl. negatives / large "to front" values) is safe.
+  _objDepth(z) {
+    return 1.5 + Math.atan((z || 0) / 500) / Math.PI; // → (1, 2)
+  }
+
   _addMapObjectSprite(o) {
     const key = `obj:${o.f}`;
     if (!this.textures.exists(key)) return null;
@@ -124,10 +131,16 @@ export class GameScene extends Phaser.Scene {
     const img = this.add.image(px, py, key).setOrigin(0, 0);
     img.setData('mapId', o.id);
     img.setData('obj', o);
-    // Y-sort against players using the sprite's foot
-    img.setDepth(3 + (py + img.height) / 10000);
+    img.setDepth(this._objDepth(o.z));
     this.mapObjects.set(o.id, img);
     return img;
+  }
+
+  onMapObjectZ(id, z) {
+    const img = this.mapObjects?.get(id);
+    if (!img) return;
+    img.getData('obj').z = z;
+    img.setDepth(this._objDepth(z));
   }
 
   onMapObjectAdded(o) {
@@ -139,10 +152,8 @@ export class GameScene extends Phaser.Scene {
     const img = this.mapObjects?.get(id);
     if (!img) return;
     const T = this._mapTile;
-    const px = x * T + (ox || 0);
-    const py = y * T + (oy || 0);
-    img.setPosition(px, py);
-    img.setDepth(3 + (py + img.height) / 10000);
+    img.setPosition(x * T + (ox || 0), y * T + (oy || 0));
+    // depth stays driven by z (layer), independent of position
     const o = img.getData('obj');
     Object.assign(o, { x, y, ox: ox || 0, oy: oy || 0 });
   }
