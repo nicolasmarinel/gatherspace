@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { AVATAR_COLORS } from '../constants.js';
+import gatherMap from '../gatherMap.js';
 
 export class BootScene extends Phaser.Scene {
   constructor() { super('Boot'); }
@@ -12,6 +13,9 @@ export class BootScene extends Phaser.Scene {
     this.load.on('loaderror', (file) => {
       if (file.key === 'bg-map') console.info('No custom background.png — using the built-in scene.');
     });
+
+    // Imported Gather map object sprites (keyed by filename)
+    gatherMap.images.forEach(f => this.load.image(`obj:${f}`, `/objects/${f}`));
   }
 
   create() {

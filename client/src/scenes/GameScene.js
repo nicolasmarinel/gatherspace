@@ -4,6 +4,7 @@ import { LocalPlayer } from '../objects/LocalPlayer.js';
 import { RemotePlayer } from '../objects/RemotePlayer.js';
 import { SocketManager } from '../managers/SocketManager.js';
 import { WebRTCManager } from '../managers/WebRTCManager.js';
+import gatherMap from '../gatherMap.js';
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -50,6 +51,8 @@ export class GameScene extends Phaser.Scene {
     // Custom map image replaces the entire procedural scene
     if (this._hasBg) {
       this.add.image(this.mapW / 2, this.mapH / 2, 'bg-map').setDepth(0);
+      this._placeGatherObjects();
+      this._buildGatherCollisions();
       return;
     }
 
@@ -82,6 +85,39 @@ export class GameScene extends Phaser.Scene {
     this._buildLounge();
     this._buildMeetingRoom();
     this._buildKitchen();
+  }
+
+  // ── imported Gather map ─────────────────────────────────────────────────────
+
+  _placeGatherObjects() {
+    const T = gatherMap.tile;
+    gatherMap.placements.forEach(p => {
+      const key = `obj:${p.f}`;
+      if (!this.textures.exists(key)) return;
+      const px = p.x * T + (p.ox || 0);
+      const py = p.y * T + (p.oy || 0);
+      const img = this.add.image(px, py, key).setOrigin(0, 0);
+      // Y-sort against players using the sprite's foot, so avatars pass
+      // behind tall objects and in front of ones below them.
+      img.setDepth(3 + (py + img.height) / 10000);
+    });
+  }
+
+  _buildGatherCollisions() {
+    const T = gatherMap.tile;
+    const [W, H] = gatherMap.dims;
+    const bytes = Uint8Array.from(atob(gatherMap.collisions), c => c.charCodeAt(0));
+    const group = this.physics.add.staticGroup();
+    for (let row = 0; row < H; row++) {
+      for (let col = 0; col < W; col++) {
+        if (bytes[row * W + col]) {
+          const zone = this.add.zone(col * T + T / 2, row * T + T / 2, T, T);
+          this.physics.add.existing(zone, true); // invisible static body
+          group.add(zone);
+        }
+      }
+    }
+    this._collisionGroup = group;
   }
 
   _buildOffice() {
@@ -160,6 +196,10 @@ export class GameScene extends Phaser.Scene {
     this.localPlayer = new LocalPlayer(
       this, this.mapW / 2, this.mapH / 2, this.avatarIndex, this.playerName
     );
+    // Solid tiles from the imported map block the local avatar
+    if (this._collisionGroup) {
+      this.physics.add.collider(this.localPlayer.sprite, this._collisionGroup);
+    }
   }
 
   addRemotePlayer(data) {
