@@ -300,7 +300,7 @@ export class GameScene extends Phaser.Scene {
     this.add.text(14, this.scale.height - 48, this.playerName, style('14px'))
       .setScrollFactor(0).setDepth(10);
 
-    const hint = this._isMobile ? 'Touch & drag to move' : 'Move: WASD / Arrows  ·  Zoom: + / −  ·  Dance: Space';
+    const hint = this._isMobile ? 'Touch & drag to move' : 'Move: WASD / Arrows  ·  Zoom: + / −  ·  Dance: Z';
     this.add.text(14, this.scale.height - 26, hint, {
       fontSize: '12px', color: '#4b5563', fontFamily: 'monospace'
     }).setScrollFactor(0).setDepth(10);
@@ -321,8 +321,12 @@ export class GameScene extends Phaser.Scene {
       left: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
       right: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     };
-    // Hold SPACE (while standing still) to dance
-    this.danceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    // Press Z to toggle dance mode (stays dancing until you move)
+    this.input.keyboard.on('keydown-Z', () => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return; // don't trigger while typing
+      this.localPlayer?.toggleDance();
+    });
 
     // Clicking the game world drops focus from any text input (e.g. chat),
     // so movement resumes without needing to hunt for an escape.
@@ -403,8 +407,7 @@ export class GameScene extends Phaser.Scene {
     if (inputFocused) {
       this.localPlayer.sprite.setVelocity(0, 0);
     } else {
-      const danceDown = !!this.danceKey?.isDown;
-      moved = this.localPlayer.update(this.cursors, this.wasd, this._getJoystickVelocity(), danceDown);
+      moved = this.localPlayer.update(this.cursors, this.wasd, this._getJoystickVelocity());
     }
     if (this._joystick) this._drawJoystick();
 

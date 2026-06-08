@@ -11,6 +11,7 @@ export class LocalPlayer {
     this.direction = 'down';
     this.isMoving = false;
     this.dancing = false;
+    this.danceMode = false; // toggled by the dance key; any movement clears it
     this._prevX = x;
     this._prevY = y;
     this._lastSentX = x;
@@ -33,10 +34,12 @@ export class LocalPlayer {
     }).setOrigin(0.5).setDepth(4.1);
   }
 
+  // Toggle dance mode (key press). Movement will clear it on the next update.
+  toggleDance() { this.danceMode = !this.danceMode; }
+
   // Returns true if position changed since last call.
   // extVel = { vx, vy } from touch joystick — takes priority over keys.
-  // danceDown = dance key held (only dances while standing still).
-  update(cursors, wasd, extVel = null, danceDown = false) {
+  update(cursors, wasd, extVel = null) {
     let vx, vy;
 
     if (extVel) {
@@ -65,7 +68,8 @@ export class LocalPlayer {
 
     this.sprite.setVelocity(vx, vy);
     this.isMoving = vx !== 0 || vy !== 0;
-    this.dancing = !this.isMoving && danceDown;
+    if (this.isMoving) this.danceMode = false; // any movement breaks the dance
+    this.dancing = this.danceMode && !this.isMoving;
 
     this._applyPose();
 
