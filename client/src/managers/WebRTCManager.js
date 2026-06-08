@@ -114,10 +114,9 @@ export class WebRTCManager {
     this._status.addEventListener('click', () => this._retryMedia());
     document.body.appendChild(this._status);
 
-    // Expanded overlay — hidden until a tile is clicked.
-    // Opaque background so nothing behind it shows through / overlaps.
+    // Expanded overlay — hidden until a tile is clicked
     this._overlay = mk('div', `
-      position:fixed; inset:0; background:#0b1220; z-index:200;
+      position:fixed; inset:0; background:#000000cc; z-index:200;
       display:none; flex-direction:column;
     `);
     this._overlay.addEventListener('click', e => {
@@ -468,11 +467,18 @@ export class WebRTCManager {
       gap:10px; align-content:start;
     `);
     participants.forEach(p => {
+      // padding-top:56.25% locks height to 9/16 of the (1fr) width. This is
+      // reliable across browsers, unlike aspect-ratio on a grid item holding a
+      // <video>, which can stop tracking width and let rows overlap.
       const cell = mk('div', `
-        position:relative; border-radius:12px; overflow:hidden; cursor:pointer;
-        background:#000; border:2px solid ${p.screen ? '#0ea5e9' : '#334155'}; aspect-ratio:16/9;
+        position:relative; width:100%; height:0; padding-top:56.25%;
+        border-radius:12px; overflow:hidden; cursor:pointer;
+        background:#000; border:2px solid ${p.screen ? '#0ea5e9' : '#334155'};
       `);
-      cell.append(this._makeExpVideo(p.stream), this._cellLabel(p.name));
+      const vid = this._makeExpVideo(p.stream);
+      vid.style.position = 'absolute';
+      vid.style.inset = '0';
+      cell.append(vid, this._cellLabel(p.name));
       cell.addEventListener('click', () => { this._focusedKey = p.key; this._buildExpandedGrid(); });
       grid.appendChild(cell);
     });
