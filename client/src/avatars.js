@@ -16,7 +16,7 @@ export const N_COLORS = 8;
 
 export const CUSTOM_AVATARS = [
   { label: 'Nico', sheet: '/avatars/avatar-1.png' },
-  { label: 'Avatar 2', sheet: '/avatars/avatar-2.png' },
+  { label: 'Kat', sheet: '/avatars/avatar-2.png' },
 ];
 
 export const FRAME_W = 32;
