@@ -43,6 +43,7 @@ export class GameScene extends Phaser.Scene {
     this._setupHUD();
     this._setupKeys();
     this._setupJoystick();
+    this._setupZoom();
   }
 
   // ── world ─────────────────────────────────────────────────────────────────
@@ -239,7 +240,52 @@ export class GameScene extends Phaser.Scene {
   _setupCamera() {
     this.cameras.main.setBounds(0, 0, this.mapW, this.mapH);
     this.cameras.main.startFollow(this.localPlayer.sprite, true, 0.08, 0.08);
-    this.cameras.main.setZoom(1.25);
+    this._zoom = 1.25;
+    this._zoomMin = 0.6;
+    this._zoomMax = 2.5;
+    this.cameras.main.setZoom(this._zoom);
+  }
+
+  // ── zoom ────────────────────────────────────────────────────────────────────
+
+  _setupZoom() {
+    // Mouse wheel
+    this.input.on('wheel', (_p, _over, _dx, dy) => {
+      this._applyZoom(this._zoom - Math.sign(dy) * 0.15);
+    });
+    // Keyboard +/- (and = for the unshifted plus key)
+    this.input.keyboard.on('keydown', (e) => {
+      if (e.key === '+' || e.key === '=') this._applyZoom(this._zoom + 0.15);
+      else if (e.key === '-' || e.key === '_') this._applyZoom(this._zoom - 0.15);
+    });
+
+    // On-screen zoom widget (also for touch) — bottom-left, above the HUD text
+    const wrap = document.createElement('div');
+    wrap.style.cssText = `
+      position:fixed; bottom:54px; left:14px; z-index:100; display:flex; gap:6px;
+    `;
+    const mkBtn = (label, fn) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText = `
+        width:34px; height:34px; border-radius:8px; cursor:pointer;
+        background:#1e293b; border:1px solid #334155; color:#e2e8f0;
+        font-family:monospace; font-size:18px; line-height:1;
+      `;
+      b.addEventListener('click', () => { fn(); b.blur(); });
+      return b;
+    };
+    wrap.append(
+      mkBtn('−', () => this._applyZoom(this._zoom - 0.25)),
+      mkBtn('+', () => this._applyZoom(this._zoom + 0.25)),
+    );
+    document.body.appendChild(wrap);
+    this._zoomWidget = wrap;
+  }
+
+  _applyZoom(z) {
+    this._zoom = Phaser.Math.Clamp(z, this._zoomMin, this._zoomMax);
+    this.cameras.main.setZoom(this._zoom);
   }
 
   // ── HUD ───────────────────────────────────────────────────────────────────
@@ -254,7 +300,7 @@ export class GameScene extends Phaser.Scene {
     this.add.text(14, this.scale.height - 48, this.playerName, style('14px'))
       .setScrollFactor(0).setDepth(10);
 
-    const hint = this._isMobile ? 'Touch & drag to move' : 'Move: Arrow Keys';
+    const hint = this._isMobile ? 'Touch & drag to move' : 'Move: WASD / Arrows  ·  Zoom: + / −  ·  Dance: Space';
     this.add.text(14, this.scale.height - 26, hint, {
       fontSize: '12px', color: '#4b5563', fontFamily: 'monospace'
     }).setScrollFactor(0).setDepth(10);
@@ -266,8 +312,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   _setupKeys() {
-    // Arrow keys only — letter keys stay free for typing in chat
     this.cursors = this.input.keyboard.createCursorKeys();
+    // WASD movement. Safe alongside chat: movement is frozen while a text input
+    // is focused, and chat keystrokes stopPropagation so they never reach here.
+    this.wasd = {
+      up: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W),
+      down: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S),
+      left: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A),
+      right: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
+    };
     // Hold SPACE (while standing still) to dance
     this.danceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
@@ -351,7 +404,7 @@ export class GameScene extends Phaser.Scene {
       this.localPlayer.sprite.setVelocity(0, 0);
     } else {
       const danceDown = !!this.danceKey?.isDown;
-      moved = this.localPlayer.update(this.cursors, this._getJoystickVelocity(), danceDown);
+      moved = this.localPlayer.update(this.cursors, this.wasd, this._getJoystickVelocity(), danceDown);
     }
     if (this._joystick) this._drawJoystick();
 
@@ -413,5 +466,6 @@ export class GameScene extends Phaser.Scene {
   shutdown() {
     this.socket?.disconnect();
     this.webRTC?.destroy();
+    this._zoomWidget?.remove();
   }
 }

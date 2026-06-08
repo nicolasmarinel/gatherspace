@@ -125,6 +125,11 @@ export class WebRTCManager {
       }).observe(this._overlay);
     }
 
+    // Esc closes the call view. (Chat's own Esc stops propagation, so typing
+    // Esc in chat just blurs the field and won't reach this.)
+    this._onEscKey = (e) => { if (e.key === 'Escape' && this._expandedOpen) this._closeExpanded(); };
+    document.addEventListener('keydown', this._onEscKey);
+
     // Chat panel — bottom-right, hidden until peers connect
     this._buildChatPanel();
   }
@@ -1174,6 +1179,7 @@ export class WebRTCManager {
   // ── cleanup ───────────────────────────────────────────────────────────────
 
   destroy() {
+    if (this._onEscKey) document.removeEventListener('keydown', this._onEscKey);
     this.peers.forEach((_, id) => this.closePeer(id));
     this._stopScreenShare();
     this.localStream?.getTracks().forEach(t => t.stop());

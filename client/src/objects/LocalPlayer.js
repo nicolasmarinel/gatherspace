@@ -34,9 +34,9 @@ export class LocalPlayer {
   }
 
   // Returns true if position changed since last call.
-  // extVel = { vx, vy } from touch joystick — takes priority over arrow keys.
+  // extVel = { vx, vy } from touch joystick — takes priority over keys.
   // danceDown = dance key held (only dances while standing still).
-  update(cursors, extVel = null, danceDown = false) {
+  update(cursors, wasd, extVel = null, danceDown = false) {
     let vx, vy;
 
     if (extVel) {
@@ -48,10 +48,10 @@ export class LocalPlayer {
         this.direction = vy > 0 ? 'down' : 'up';
       }
     } else {
-      const up = cursors.up.isDown;
-      const down = cursors.down.isDown;
-      const left = cursors.left.isDown;
-      const right = cursors.right.isDown;
+      const up = cursors.up.isDown || wasd.up.isDown;
+      const down = cursors.down.isDown || wasd.down.isDown;
+      const left = cursors.left.isDown || wasd.left.isDown;
+      const right = cursors.right.isDown || wasd.right.isDown;
 
       vx = 0; vy = 0;
       if (up) { vy = -PLAYER_SPEED; this.direction = 'up'; }
