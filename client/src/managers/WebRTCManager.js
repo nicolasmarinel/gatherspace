@@ -28,13 +28,6 @@ const VIDEO_QUALITIES = {
 const TILE_W = 256;
 const TILE_H = 192;
 
-function gridCols(n) {
-  if (n <= 1) return 1;
-  if (n <= 4) return 2;
-  if (n <= 9) return 3;
-  return 4; // up to 10
-}
-
 export class WebRTCManager {
   constructor(socketManager, localName = 'You') {
     this.socket     = socketManager;
@@ -123,6 +116,14 @@ export class WebRTCManager {
       if (e.target === this._overlay) this._closeExpanded();
     });
     document.body.appendChild(this._overlay);
+
+    // Recompute the grid layout when the call view resizes (drag, tiling, etc.)
+    // — updates CSS only, never rebuilds the <video>s, so there's no flicker.
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => {
+        if (this._expandedOpen && this._gridEl) this._applyGridLayout();
+      }).observe(this._overlay);
+    }
 
     // Chat panel — bottom-right, hidden until peers connect
     this._buildChatPanel();
@@ -365,6 +366,7 @@ export class WebRTCManager {
 
   _buildExpandedGrid() {
     this._overlay.innerHTML = '';
+    this._gridEl = null; // only set while the equal-grid view is mounted
 
     // ── Header: controls + close ──
     const header = mk('div', `
@@ -458,31 +460,69 @@ export class WebRTCManager {
     return lbl;
   }
 
-  // Equal-sized grid; clicking any cell focuses that participant
+  // Equal-sized grid that always fits the call view (no scrollbar). The exact
+  // column/row counts and per-tile object-fit are computed in _applyGridLayout
+  // from the live container size; clicking any cell focuses that participant.
   _buildGridView(participants) {
-    const cols = gridCols(participants.length);
     const grid = mk('div', `
-      flex:1; overflow-y:auto; padding:14px;
-      display:grid; grid-template-columns:repeat(${cols},1fr);
-      gap:10px; align-content:start;
+      flex:1; min-height:0; overflow:hidden; padding:14px;
+      display:grid; gap:10px;
     `);
+    this._gridVideos = [];
     participants.forEach(p => {
-      // padding-top:56.25% locks height to 9/16 of the (1fr) width. This is
-      // reliable across browsers, unlike aspect-ratio on a grid item holding a
-      // <video>, which can stop tracking width and let rows overlap.
       const cell = mk('div', `
-        position:relative; width:100%; height:0; padding-top:56.25%;
+        position:relative; min-width:0; min-height:0;
         border-radius:12px; overflow:hidden; cursor:pointer;
         background:#000; border:2px solid ${p.screen ? '#0ea5e9' : '#334155'};
       `);
-      const vid = this._makeExpVideo(p.stream);
-      vid.style.position = 'absolute';
-      vid.style.inset = '0';
+      const vid = this._makeExpVideo(p.stream); // object-fit set by _applyGridLayout
       cell.append(vid, this._cellLabel(p.name));
       cell.addEventListener('click', () => { this._focusedKey = p.key; this._buildExpandedGrid(); });
       grid.appendChild(cell);
+      this._gridVideos.push({ video: vid, isScreen: p.screen });
     });
+    this._gridEl = grid;
+    this._gridCount = participants.length;
+    // Wait one frame so the grid has measurable dimensions, then lay it out
+    requestAnimationFrame(() => this._applyGridLayout());
     return grid;
+  }
+
+  // Pick the column/row split that yields the largest 16:9 tile in the
+  // available area (so the grid always fits without scrolling). If the
+  // resulting cells are close to 16:9, show the full frame (contain); if the
+  // layout forces a different shape, reframe to fill it (cover). Shared
+  // screens always stay 'contain' so their content is never cropped.
+  _applyGridLayout() {
+    const grid = this._gridEl;
+    const n = this._gridCount;
+    if (!grid || !n) return;
+
+    const GAP = 10, PAD = 14;
+    const rect = grid.getBoundingClientRect();
+    const W = (rect.width  || window.innerWidth)  - PAD * 2;
+    const H = (rect.height || window.innerHeight) - PAD * 2;
+
+    let best = { cols: 1, rows: n, area: -1, cellW: W, cellH: H };
+    for (let cols = 1; cols <= n; cols++) {
+      const rows = Math.ceil(n / cols);
+      const cellW = (W - (cols - 1) * GAP) / cols;
+      const cellH = (H - (rows - 1) * GAP) / rows;
+      // largest 16:9 tile that fits inside this cell
+      const tileW = Math.min(cellW, cellH * 16 / 9);
+      const area = tileW * (tileW * 9 / 16);
+      if (area > best.area) best = { cols, rows, area, cellW, cellH };
+    }
+
+    grid.style.gridTemplateColumns = `repeat(${best.cols}, 1fr)`;
+    grid.style.gridTemplateRows    = `repeat(${best.rows}, 1fr)`;
+
+    const cellAspect = best.cellW / best.cellH;
+    const within16by9 = Math.abs(cellAspect - 16 / 9) / (16 / 9) <= 0.25;
+    const camFit = within16by9 ? 'contain' : 'cover';
+    this._gridVideos.forEach(({ video, isScreen }) => {
+      video.style.objectFit = isScreen ? 'contain' : camFit;
+    });
   }
 
   // One participant fills the stage; everyone else sits in a strip below.
