@@ -67,6 +67,11 @@ export class WebRTCManager {
     this.videoDeviceId = localStorage.getItem('gs-cam') || null;
     this.audioDeviceId = localStorage.getItem('gs-mic') || null;
 
+    // Output audio: a Web Audio graph per peer enables a loudness maximizer
+    // (compressor + makeup gain) and per-user volume (can exceed 1.0).
+    this.maximizer = localStorage.getItem('gs-maximizer') === 'on';
+    this._outCtx = null;
+
     // _mediaSettled flips true once the media request resolves (success OR failure).
     // Proximity won't initiate, and incoming offers won't be answered, until then —
     // so a slow camera no longer drops the very first handshake.
@@ -431,7 +436,7 @@ export class WebRTCManager {
     }
     this.peers.forEach((peer, id) => {
       if (peer.stream) {
-        participants.push({ key: `cam:${id}`, stream: peer.stream, name: this.peerNames.get(id) || 'Player', screen: false });
+        participants.push({ key: `cam:${id}`, stream: peer.stream, name: this.peerNames.get(id) || 'Player', screen: false, peerId: id });
       }
     });
     this.screenPeers.forEach((peer, id) => {
@@ -488,6 +493,33 @@ export class WebRTCManager {
     return lbl;
   }
 
+  // Per-user volume slider for a remote participant (0–200%). Pinned top-right
+  // of a cell. Clicks are swallowed so they don't trigger focus toggling.
+  _volumeSlider(peerId) {
+    const wrap = mk('div', `
+      position:absolute; top:8px; right:8px; z-index:2;
+      display:flex; align-items:center; gap:6px;
+      background:#000000aa; border-radius:8px; padding:4px 8px;
+    `);
+    const icon = mk('span', 'font-size:13px;');
+    icon.textContent = '🔊';
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0'; slider.max = '200'; slider.step = '5';
+    slider.value = String(Math.round(this.getUserGain(peerId) * 100));
+    slider.style.cssText = 'width:90px; accent-color:#3b82f6; cursor:pointer;';
+    slider.title = 'Volume';
+    const stop = (e) => e.stopPropagation();
+    ['click', 'pointerdown', 'mousedown', 'touchstart'].forEach(ev => wrap.addEventListener(ev, stop));
+    slider.addEventListener('input', () => {
+      const g = Number(slider.value) / 100;
+      this.setUserGain(peerId, g);
+      icon.textContent = g === 0 ? '🔇' : '🔊';
+    });
+    wrap.append(icon, slider);
+    return wrap;
+  }
+
   // Equal-sized grid that always fits the call view (no scrollbar). The exact
   // column/row counts and per-tile object-fit are computed in _applyGridLayout
   // from the live container size; clicking any cell focuses that participant.
@@ -506,6 +538,7 @@ export class WebRTCManager {
       const vid = this._makeExpVideo(p.stream); // object-fit set by _applyGridLayout
       this._maybeMirror(vid, p.key);
       cell.append(vid, this._cellLabel(p.name));
+      if (p.peerId) cell.appendChild(this._volumeSlider(p.peerId));
       cell.addEventListener('click', () => { this._focusedKey = p.key; this._buildExpandedGrid(); });
       grid.appendChild(cell);
       this._gridVideos.push({ video: vid, isScreen: p.screen });
@@ -569,8 +602,9 @@ export class WebRTCManager {
     const stageVid = this._makeExpVideo(focused.stream);
     this._maybeMirror(stageVid, focused.key);
     stage.append(stageVid, this._cellLabel(focused.name));
+    if (focused.peerId) stage.appendChild(this._volumeSlider(focused.peerId));
     const hint = mk('div', `
-      position:absolute; top:10px; right:12px; background:#000000aa;
+      position:absolute; top:10px; left:12px; background:#000000aa;
       font-family:monospace; font-size:11px; color:#cbd5e1;
       padding:4px 8px; border-radius:6px;
     `);
@@ -759,12 +793,22 @@ export class WebRTCManager {
     const nsNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
     nsNote.textContent = 'RNNoise (ML) removes background sounds like keyboard typing, fans, and traffic.';
 
+    // Speaker section: loudness maximizer (applies to everyone you hear)
+    const spLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
+    spLabel.textContent = 'SPEAKER';
+    const maxRow = this._toggleRadios('gs-maximizer',
+      'Audio maximizer: On', 'Audio maximizer: Off',
+      this.maximizer, (on) => this._setMaximizer(on));
+    const spNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
+    spNote.textContent = 'Boosts and evens out incoming audio so quiet talkers are easier to hear. Adjust individual people with the volume slider on their tile in the call view.';
+
     panel.append(
       titleRow,
       sectionLabel, options, note,
       camLabel, camSelect, mirrorRow,
       bwLabel, bwOptions, bwNote,
       nsLabel, micSelect, nsOptions, nsNote,
+      spLabel, maxRow, spNote,
     );
     modal.appendChild(panel);
     document.body.appendChild(modal);
@@ -1316,6 +1360,9 @@ export class WebRTCManager {
     const peer = this.peers.get(peerId);
     if (!peer) return;
     peer.pc.close();
+    peer.srcNode?.disconnect();
+    peer.gainNode?.disconnect();
+    peer.compNode?.disconnect();
     peer.audioEl?.remove();
     peer.filmTile?.wrapper.remove();
     this.peers.delete(peerId);
@@ -1324,9 +1371,13 @@ export class WebRTCManager {
     if (this._expandedOpen) this._buildExpandedGrid();
   }
 
+  // Proximity-driven volume (called each frame by the scene)
   setVolume(peerId, vol) {
     const peer = this.peers.get(peerId);
-    if (peer?.audioEl) peer.audioEl.volume = Math.max(0, Math.min(1, vol));
+    if (!peer) return;
+    peer.proximityVol = vol;
+    if (peer.gainNode) this._updatePeerGain(peer);
+    else if (peer.audioEl) peer.audioEl.volume = Math.max(0, Math.min(1, vol * (peer.userGain ?? 1)));
   }
 
   // ── peer connections ──────────────────────────────────────────────────────
@@ -1389,16 +1440,86 @@ export class WebRTCManager {
     const peer = this.peers.get(peerId);
     if (!peer || peer.stream) return;
     peer.stream = stream;
+    peer.userGain = peer.userGain ?? 1;
+    peer.proximityVol = peer.proximityVol ?? 1;
     const name = this.peerNames.get(peerId) || 'Player';
     const tile = this._makeTile(stream, name, false);
     peer.filmTile = tile;
     this._filmstrip.appendChild(tile.wrapper);
+
     const audioEl = document.createElement('audio');
     audioEl.autoplay = true;
     audioEl.srcObject = stream;
     document.body.appendChild(audioEl);
     peer.audioEl = audioEl;
+
+    // Route audio through Web Audio for the maximizer + per-user gain. Keep the
+    // (muted) element attached — Chrome needs the stream sunk to an element for
+    // the MediaStreamAudioSourceNode to receive data.
+    if (stream.getAudioTracks().length) {
+      try {
+        const ctx = this._ensureOutCtx();
+        audioEl.muted = true;
+        const src = ctx.createMediaStreamSource(stream);
+        const gain = ctx.createGain();
+        const comp = ctx.createDynamicsCompressor();
+        src.connect(gain); gain.connect(comp); comp.connect(ctx.destination);
+        peer.srcNode = src; peer.gainNode = gain; peer.compNode = comp;
+        this._applyComp(comp);
+        this._updatePeerGain(peer);
+      } catch (e) {
+        console.warn('Web Audio output failed, using element volume:', e);
+        audioEl.muted = false;
+        peer.gainNode = null;
+      }
+    }
+
     if (this._expandedOpen) this._buildExpandedGrid();
+  }
+
+  _ensureOutCtx() {
+    if (!this._outCtx) this._outCtx = new AudioContext();
+    if (this._outCtx.state === 'suspended') this._outCtx.resume();
+    return this._outCtx;
+  }
+
+  _applyComp(comp) {
+    const on = this.maximizer;
+    comp.threshold.value = on ? -40 : 0;
+    comp.knee.value = on ? 30 : 0;
+    comp.ratio.value = on ? 12 : 1;   // ratio 1 ≈ transparent when off
+    comp.attack.value = 0.003;
+    comp.release.value = 0.25;
+  }
+
+  // effective gain = per-user × proximity × maximizer makeup
+  _updatePeerGain(peer) {
+    if (!peer.gainNode) return;
+    const boost = this.maximizer ? 1.8 : 1;
+    peer.gainNode.gain.value = Math.max(0, (peer.userGain ?? 1) * (peer.proximityVol ?? 1) * boost);
+  }
+
+  // Per-user volume (0 = mute … 1 = normal … 2 = +loud). Used by the call view.
+  setUserGain(peerId, g) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return;
+    peer.userGain = g;
+    if (peer.gainNode) this._updatePeerGain(peer);
+    else if (peer.audioEl) peer.audioEl.volume = Math.max(0, Math.min(1, g * (peer.proximityVol ?? 1)));
+  }
+
+  getUserGain(peerId) {
+    return this.peers.get(peerId)?.userGain ?? 1;
+  }
+
+  _setMaximizer(on) {
+    this.maximizer = on;
+    localStorage.setItem('gs-maximizer', on ? 'on' : 'off');
+    this.peers.forEach(peer => {
+      if (peer.compNode) this._applyComp(peer.compNode);
+      this._updatePeerGain(peer);
+    });
+    this._setStatus(on ? '🔊 Audio maximizer on' : '🔉 Audio maximizer off', '#86efac');
   }
 
   _setupDataChannel(peerId, channel) {
@@ -1468,6 +1589,7 @@ export class WebRTCManager {
     this._stopScreenShare();
     this._denoiseNode?.destroy?.();
     this._audioCtx?.close?.();
+    this._outCtx?.close?.();
     this.localStream?.getTracks().forEach(t => t.stop());
     this._filmstrip?.remove();
     this._bar?.remove();
