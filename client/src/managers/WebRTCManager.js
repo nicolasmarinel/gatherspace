@@ -1538,7 +1538,7 @@ export class WebRTCManager {
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) this.socket.sendIce(peerId, candidate);
     };
-    pc.ontrack = ({ streams }) => this._attachRemoteStream(peerId, streams[0]);
+    pc.ontrack = (e) => this._onRemoteTrack(peerId, e);
     // Answerer side receives the data channel created by the initiator
     pc.ondatachannel = ({ channel }) => this._setupDataChannel(peerId, channel);
     pc.onconnectionstatechange = () => {
@@ -1597,46 +1597,59 @@ export class WebRTCManager {
       .catch(console.error);
   }
 
-  _attachRemoteStream(peerId, stream) {
+  // One ontrack fires per track, and tracks may arrive unbundled (no stream).
+  // Accumulate every track into a single per-peer MediaStream and build exactly
+  // one tile + one audio chain — this prevents the blank duplicate tiles that
+  // appeared when the remote attached tracks without a shared stream.
+  _onRemoteTrack(peerId, e) {
     const peer = this.peers.get(peerId);
-    if (!peer || peer.stream) return;
-    peer.stream = stream;
+    if (!peer) return;
+    if (!peer.stream) peer.stream = (e.streams && e.streams[0]) || new MediaStream();
+    if (e.track && !peer.stream.getTracks().includes(e.track)) {
+      try { peer.stream.addTrack(e.track); } catch { /* already present */ }
+    }
+    this._buildRemoteTile(peer, peerId);
+    if (e.track?.kind === 'audio') this._buildRemoteAudio(peer);
+  }
+
+  _buildRemoteTile(peer, peerId) {
+    if (peer.filmTile) return; // build the visual once
     peer.userGain = peer.userGain ?? 1;
     peer.proximityVol = peer.proximityVol ?? 1;
     const name = this.peerNames.get(peerId) || 'Player';
-    const tile = this._makeTile(stream, name, false);
+    const tile = this._makeTile(peer.stream, name, false);
     peer.filmTile = tile;
     this._filmstrip.appendChild(tile.wrapper);
-    this._refreshPeerBadges(peer); // reflect any av-state already received
+    this._refreshPeerBadges(peer);
+    if (this._expandedOpen) this._buildExpandedGrid();
+  }
 
+  _buildRemoteAudio(peer) {
+    if (peer.audioBuilt) return;
+    peer.audioBuilt = true;
     const audioEl = document.createElement('audio');
     audioEl.autoplay = true;
-    audioEl.srcObject = stream;
+    audioEl.srcObject = peer.stream;
     document.body.appendChild(audioEl);
     peer.audioEl = audioEl;
-
     // Route audio through Web Audio for the maximizer + per-user gain. Keep the
     // (muted) element attached — Chrome needs the stream sunk to an element for
     // the MediaStreamAudioSourceNode to receive data.
-    if (stream.getAudioTracks().length) {
-      try {
-        const ctx = this._ensureOutCtx();
-        audioEl.muted = true;
-        const src = ctx.createMediaStreamSource(stream);
-        const gain = ctx.createGain();
-        const comp = ctx.createDynamicsCompressor();
-        src.connect(gain); gain.connect(comp); comp.connect(ctx.destination);
-        peer.srcNode = src; peer.gainNode = gain; peer.compNode = comp;
-        this._applyComp(comp);
-        this._updatePeerGain(peer);
-      } catch (e) {
-        console.warn('Web Audio output failed, using element volume:', e);
-        audioEl.muted = false;
-        peer.gainNode = null;
-      }
+    try {
+      const ctx = this._ensureOutCtx();
+      audioEl.muted = true;
+      const src = ctx.createMediaStreamSource(peer.stream);
+      const gain = ctx.createGain();
+      const comp = ctx.createDynamicsCompressor();
+      src.connect(gain); gain.connect(comp); comp.connect(ctx.destination);
+      peer.srcNode = src; peer.gainNode = gain; peer.compNode = comp;
+      this._applyComp(comp);
+      this._updatePeerGain(peer);
+    } catch (e) {
+      console.warn('Web Audio output failed, using element volume:', e);
+      audioEl.muted = false;
+      peer.gainNode = null;
     }
-
-    if (this._expandedOpen) this._buildExpandedGrid();
   }
 
   _ensureOutCtx() {
@@ -1723,19 +1736,19 @@ export class WebRTCManager {
     const peer = { id: fromId, pc, stream: null, audioEl: null, filmTile: null, dc: null };
     this.peers.set(fromId, peer);
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    // Reuse the offer's transceivers: make each sendrecv, store the sender, and
-    // attach our current track (if any). Guarantees audio+video senders exist.
+    // Attach our tracks with addTrack(track, localStream) so they're bundled in
+    // a MediaStream — this is what makes the offerer's ontrack receive a proper
+    // streams[0] (otherwise it gets blank, duplicated tiles). addTrack reuses
+    // the offer's recvonly transceivers. For tracks we don't have (camera off),
+    // capture the existing transceiver's sender so toggling-on works later.
+    const a = this.localStream?.getAudioTracks()[0];
+    const v = this.localStream?.getVideoTracks()[0];
+    if (a) peer.audioSender = pc.addTrack(a, this.localStream);
+    if (v) peer.videoSender = pc.addTrack(v, this.localStream);
     pc.getTransceivers().forEach(tr => {
       const kind = tr.receiver.track?.kind;
-      if (kind === 'audio') {
-        peer.audioSender = tr.sender;
-        const a = this.localStream?.getAudioTracks()[0];
-        if (a) { try { tr.direction = 'sendrecv'; } catch {} tr.sender.replaceTrack(a).catch(() => {}); }
-      } else if (kind === 'video') {
-        peer.videoSender = tr.sender;
-        const v = this.localStream?.getVideoTracks()[0];
-        if (v) { try { tr.direction = 'sendrecv'; } catch {} tr.sender.replaceTrack(v).catch(() => {}); }
-      }
+      if (kind === 'audio' && !peer.audioSender) peer.audioSender = tr.sender;
+      if (kind === 'video' && !peer.videoSender) peer.videoSender = tr.sender;
     });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
