@@ -230,17 +230,94 @@ export class WebRTCManager {
 
   // ── toggle actions ────────────────────────────────────────────────────────
 
-  _toggleMute() {
-    this.audioMuted = !this.audioMuted;
-    this.localStream?.getAudioTracks().forEach(t => t.enabled = !this.audioMuted);
-    this._syncControlBtns();
+  // Mic toggle actually releases / re-opens the microphone device.
+  async _toggleMute() {
+    if (this._togglingMic) return;
+    this._togglingMic = true;
+    try {
+      if (!this.audioMuted) {
+        this.audioMuted = true;
+        this._rawAudioTrack?.stop();
+        this._denoiseNode?.destroy?.();
+        this._audioCtx?.close?.();
+        this._audioCtx = null; this._denoiseNode = null; this._cleanAudioTrack = null;
+        const cur = this.localStream?.getAudioTracks()[0];
+        if (cur) this.localStream.removeTrack(cur);
+        this._rawAudioTrack = null;
+        this.peers.forEach(p => { const s = this._aSender(p); if (s) s.replaceTrack(null).catch(() => {}); });
+      } else {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+            ...(this.audioDeviceId ? { deviceId: { exact: this.audioDeviceId } } : {}),
+          },
+        });
+        this._rawAudioTrack = stream.getAudioTracks()[0];
+        this.audioMuted = false;
+        if (this.noiseSuppression) { try { await this._ensureDenoiser(); } catch (e) { console.warn(e); } }
+        this._applyAudioTrack();
+      }
+    } catch (e) {
+      console.error('Mic toggle failed:', e);
+      this._setStatus('⚠️ Mic toggle failed', '#fca5a5');
+    } finally {
+      this._togglingMic = false;
+    }
+    this._afterAvToggle();
   }
 
-  _toggleCam() {
-    this.videoHidden = !this.videoHidden;
-    this.localStream?.getVideoTracks().forEach(t => t.enabled = !this.videoHidden);
-    if (this._localTile?.video) this._localTile.video.style.opacity = this.videoHidden ? '0' : '1';
+  // Camera toggle actually releases / re-opens the camera device (LED off).
+  async _toggleCam() {
+    if (this._togglingCam) return;
+    this._togglingCam = true;
+    try {
+      if (!this.videoHidden) {
+        this.videoHidden = true;
+        const v = this.localStream?.getVideoTracks()[0];
+        if (v) { this.localStream.removeTrack(v); v.stop(); }
+        if (this._localTile?.video) this._localTile.video.srcObject = this.localStream;
+        this.peers.forEach(p => { const s = this._vSender(p); if (s) s.replaceTrack(null).catch(() => {}); });
+      } else {
+        const { w, h, fps } = VIDEO_QUALITIES[this.currentQuality];
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps },
+            ...(this.videoDeviceId ? { deviceId: { exact: this.videoDeviceId } } : { facingMode: 'user' }),
+          },
+        });
+        const track = stream.getVideoTracks()[0];
+        if (!this.localStream) { this.localStream = stream; }
+        else {
+          const old = this.localStream.getVideoTracks()[0];
+          if (old) { this.localStream.removeTrack(old); old.stop(); }
+          this.localStream.addTrack(track);
+        }
+        if (this._localTile?.video) {
+          this._localTile.video.srcObject = this.localStream;
+          this._localTile.video.style.transform = this.mirrorSelf ? 'scaleX(-1)' : '';
+        }
+        this.peers.forEach(p => {
+          const s = this._vSender(p);
+          if (s) s.replaceTrack(track).catch(() => {});
+          this._tuneVideoBitrate(p.pc);
+        });
+        this.videoHidden = false;
+      }
+    } catch (e) {
+      console.error('Camera toggle failed:', e);
+      this._setStatus('⚠️ Camera toggle failed', '#fca5a5');
+    } finally {
+      this._togglingCam = false;
+    }
+    this._afterAvToggle();
+  }
+
+  // Shared post-toggle: refresh buttons + local badges, tell peers, redraw call
+  _afterAvToggle() {
     this._syncControlBtns();
+    this._refreshLocalBadges();
+    this._sendAvState();
+    if (this._expandedOpen) this._buildExpandedGrid();
   }
 
   _toggleSelf() {
@@ -429,14 +506,16 @@ export class WebRTCManager {
     // ── Participants (each gets a stable key for focus tracking) ──
     const participants = [];
     if (!this.selfViewHidden && this.localStream) {
-      participants.push({ key: 'local-cam', stream: this.localStream, name: `${this.localName} (you)`, screen: false });
+      participants.push({ key: 'local-cam', stream: this.localStream, name: `${this.localName} (you)`, screen: false,
+        audioMuted: this.audioMuted, videoHidden: this.videoHidden });
     }
     if (this.screenSharing && this._screenStream) {
       participants.push({ key: 'local-screen', stream: this._screenStream, name: `${this.localName}'s screen`, screen: true });
     }
     this.peers.forEach((peer, id) => {
       if (peer.stream) {
-        participants.push({ key: `cam:${id}`, stream: peer.stream, name: this.peerNames.get(id) || 'Player', screen: false, peerId: id });
+        participants.push({ key: `cam:${id}`, stream: peer.stream, name: this.peerNames.get(id) || 'Player', screen: false, peerId: id,
+          audioMuted: peer.remoteAudioMuted, videoHidden: peer.remoteVideoHidden });
       }
     });
     this.screenPeers.forEach((peer, id) => {
@@ -472,6 +551,70 @@ export class WebRTCManager {
     if (key === 'local-cam' && this.mirrorSelf) vid.style.transform = 'scaleX(-1)';
   }
 
+  // ── mute / camera-off indicators ────────────────────────────────────────────
+
+  // Adds/updates a camera-off cover and a mic-muted badge on a tile/cell.
+  _applyAvBadges(wrapper, { audioMuted, videoHidden, name }, big = false) {
+    let cover = wrapper.querySelector('[data-av-cover]');
+    if (!cover) {
+      cover = mk('div', `
+        position:absolute; inset:0; z-index:3; display:none;
+        align-items:center; justify-content:center; flex-direction:column; gap:6px;
+        background:#0f172a; color:#94a3b8; font-family:monospace; text-align:center;
+      `);
+      cover.dataset.avCover = '1';
+      const ic = mk('div', ''); ic.dataset.avCoverIcon = '1'; ic.textContent = '📷🚫';
+      const nm = mk('div', 'color:#e2e8f0;'); nm.dataset.avCoverName = '1';
+      cover.append(ic, nm);
+      wrapper.appendChild(cover);
+    }
+    cover.style.display = videoHidden ? 'flex' : 'none';
+    cover.querySelector('[data-av-cover-icon]').style.fontSize = big ? '40px' : '20px';
+    const nmEl = cover.querySelector('[data-av-cover-name]');
+    nmEl.textContent = name || '';
+    nmEl.style.fontSize = big ? '15px' : '10px';
+
+    let badge = wrapper.querySelector('[data-av-mic]');
+    if (!badge) {
+      badge = mk('div', `
+        position:absolute; top:6px; left:6px; z-index:4; display:none;
+        background:#7f1d1dcc; border-radius:6px; padding:2px 5px; line-height:1;
+      `);
+      badge.dataset.avMic = '1'; badge.textContent = '🔇';
+      wrapper.appendChild(badge);
+    }
+    badge.style.fontSize = big ? '18px' : '12px';
+    badge.style.display = audioMuted ? 'block' : 'none';
+  }
+
+  _refreshLocalBadges() {
+    if (this._localTile?.wrapper) {
+      this._applyAvBadges(this._localTile.wrapper, {
+        audioMuted: this.audioMuted, videoHidden: this.videoHidden, name: this.localName,
+      });
+    }
+  }
+
+  _refreshPeerBadges(peer) {
+    if (!peer?.filmTile?.wrapper) return;
+    this._applyAvBadges(peer.filmTile.wrapper, {
+      audioMuted: peer.remoteAudioMuted, videoHidden: peer.remoteVideoHidden,
+      name: this.peerNames.get(peer.id) || 'Player',
+    });
+  }
+
+  // Broadcast my mic/camera state to all connected peers (over the data channel)
+  _sendAvState() {
+    const payload = JSON.stringify({ t: 'av', audioMuted: this.audioMuted, videoHidden: this.videoHidden });
+    this.peers.forEach(p => { if (p.dc?.readyState === 'open') p.dc.send(payload); });
+  }
+
+  _sendAvStateTo(peer) {
+    if (peer?.dc?.readyState === 'open') {
+      peer.dc.send(JSON.stringify({ t: 'av', audioMuted: this.audioMuted, videoHidden: this.videoHidden }));
+    }
+  }
+
   // A video element that always shows the whole frame, black-filling the rest
   _makeExpVideo(stream) {
     const vid = document.createElement('video');
@@ -497,7 +640,7 @@ export class WebRTCManager {
   // of a cell. Clicks are swallowed so they don't trigger focus toggling.
   _volumeSlider(peerId) {
     const wrap = mk('div', `
-      position:absolute; top:8px; right:8px; z-index:2;
+      position:absolute; top:8px; right:8px; z-index:5;
       display:flex; align-items:center; gap:6px;
       background:#000000aa; border-radius:8px; padding:4px 8px;
     `);
@@ -538,6 +681,7 @@ export class WebRTCManager {
       const vid = this._makeExpVideo(p.stream); // object-fit set by _applyGridLayout
       this._maybeMirror(vid, p.key);
       cell.append(vid, this._cellLabel(p.name));
+      if (!p.screen) this._applyAvBadges(cell, { audioMuted: p.audioMuted, videoHidden: p.videoHidden, name: p.name }, true);
       if (p.peerId) cell.appendChild(this._volumeSlider(p.peerId));
       cell.addEventListener('click', () => { this._focusedKey = p.key; this._buildExpandedGrid(); });
       grid.appendChild(cell);
@@ -602,6 +746,7 @@ export class WebRTCManager {
     const stageVid = this._makeExpVideo(focused.stream);
     this._maybeMirror(stageVid, focused.key);
     stage.append(stageVid, this._cellLabel(focused.name));
+    if (!focused.screen) this._applyAvBadges(stage, { audioMuted: focused.audioMuted, videoHidden: focused.videoHidden, name: focused.name }, true);
     if (focused.peerId) stage.appendChild(this._volumeSlider(focused.peerId));
     const hint = mk('div', `
       position:absolute; top:10px; left:12px; background:#000000aa;
@@ -856,7 +1001,7 @@ export class WebRTCManager {
       // Hot-swap the track in all live peer connections (no renegotiation needed),
       // then re-apply the new quality's bitrate ceiling.
       this.peers.forEach(peer => {
-        const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
+        const sender = this._vSender(peer);
         if (sender) sender.replaceTrack(newTrack).catch(console.error);
         this._tuneVideoBitrate(peer.pc);
       });
@@ -1019,7 +1164,7 @@ export class WebRTCManager {
   _sendMessage(text) {
     text = text.trim();
     if (!text) return;
-    const payload = JSON.stringify({ name: this.localName, text });
+    const payload = JSON.stringify({ t: 'chat', name: this.localName, text });
     this.peers.forEach(peer => {
       if (peer.dc?.readyState === 'open') peer.dc.send(payload);
     });
@@ -1147,7 +1292,7 @@ export class WebRTCManager {
     if (cur && cur !== active) this.localStream.removeTrack(cur);
     if (!this.localStream.getAudioTracks().includes(active)) this.localStream.addTrack(active);
     this.peers.forEach(peer => {
-      const sender = peer.pc.getSenders().find(s => s.track?.kind === 'audio');
+      const sender = this._aSender(peer);
       if (sender && sender.track !== active) sender.replaceTrack(active).catch(() => {});
     });
   }
@@ -1238,7 +1383,7 @@ export class WebRTCManager {
         this._localTile.video.style.transform = this.mirrorSelf ? 'scaleX(-1)' : '';
       }
       this.peers.forEach(p => {
-        const s = p.pc.getSenders().find(s => s.track?.kind === 'video');
+        const s = this._vSender(p);
         if (s) s.replaceTrack(nv).catch(() => {});
       });
     }
@@ -1328,7 +1473,7 @@ export class WebRTCManager {
     // Hot-swap new tracks into existing senders (no renegotiation needed)
     this.peers.forEach(peer => {
       this.localStream.getTracks().forEach(track => {
-        const sender = peer.pc.getSenders().find(s => s.track?.kind === track.kind);
+        const sender = track.kind === 'video' ? this._vSender(peer) : this._aSender(peer);
         if (sender) sender.replaceTrack(track).catch(() => {});
       });
       this._tuneVideoBitrate(peer.pc);
@@ -1417,19 +1562,29 @@ export class WebRTCManager {
     catch (e) { console.warn('Bitrate tuning failed:', e); }
   }
 
+  _vSender(peer) { return peer.videoSender || peer.pc.getSenders().find(s => s.track?.kind === 'video'); }
+  _aSender(peer) { return peer.audioSender || peer.pc.getSenders().find(s => s.track?.kind === 'audio'); }
+
+  // Always create both an audio and a video sender (sendrecv), with the current
+  // local track attached if we have one. Storing the senders means toggling
+  // camera/mic later can replaceTrack(null)/replaceTrack(track) reliably even
+  // for peers that connected while a device was off.
+  _addLocalTracks(peer) {
+    const pc = peer.pc;
+    const a = this.localStream?.getAudioTracks()[0];
+    const v = this.localStream?.getVideoTracks()[0];
+    peer.audioSender = a ? pc.addTrack(a, this.localStream) : pc.addTransceiver('audio', { direction: 'sendrecv' }).sender;
+    peer.videoSender = v ? pc.addTrack(v, this.localStream) : pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+  }
+
   _initiatePeer(peerId) {
     const pc = this._makePeerConnection(peerId);
-    this.peers.set(peerId, { pc, stream: null, audioEl: null, filmTile: null, dc: null });
+    const peer = { id: peerId, pc, stream: null, audioEl: null, filmTile: null, dc: null };
+    this.peers.set(peerId, peer);
     const dc = pc.createDataChannel('chat', { ordered: true });
     this._setupDataChannel(peerId, dc);
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
-      this._tuneVideoBitrate(pc);
-    } else {
-      // No camera/mic — still negotiate so we can receive the other side
-      pc.addTransceiver('audio', { direction: 'recvonly' });
-      pc.addTransceiver('video', { direction: 'recvonly' });
-    }
+    this._addLocalTracks(peer);
+    this._tuneVideoBitrate(pc);
     pc.createOffer()
       .then(o => pc.setLocalDescription(o).then(() => o))
       .then(o => this.socket.sendOffer(peerId, o))
@@ -1446,6 +1601,7 @@ export class WebRTCManager {
     const tile = this._makeTile(stream, name, false);
     peer.filmTile = tile;
     this._filmstrip.appendChild(tile.wrapper);
+    this._refreshPeerBadges(peer); // reflect any av-state already received
 
     const audioEl = document.createElement('audio');
     audioEl.autoplay = true;
@@ -1525,11 +1681,23 @@ export class WebRTCManager {
   _setupDataChannel(peerId, channel) {
     const peer = this.peers.get(peerId);
     if (peer) peer.dc = channel;
-    channel.onopen = () => this._showChat();
+    channel.onopen = () => {
+      this._showChat();
+      this._sendAvStateTo(peer); // tell the newcomer my current mic/cam state
+    };
     channel.onmessage = ({ data }) => {
       try {
-        const { name, text } = JSON.parse(data);
-        this._appendMessage(name, text, false);
+        const msg = JSON.parse(data);
+        if (msg.t === 'av') {
+          if (peer) {
+            peer.remoteAudioMuted = !!msg.audioMuted;
+            peer.remoteVideoHidden = !!msg.videoHidden;
+            this._refreshPeerBadges(peer);
+            if (this._expandedOpen) this._buildExpandedGrid();
+          }
+          return;
+        }
+        this._appendMessage(msg.name, msg.text, false);
         if (this._chat.style.display === 'none') this._showChat();
       } catch { /* malformed message, ignore */ }
     };
@@ -1546,17 +1714,27 @@ export class WebRTCManager {
     if (this.peers.has(fromId)) return; // a duplicate offer may have raced us
 
     const pc = this._makePeerConnection(fromId);
-    this.peers.set(fromId, { pc, stream: null, audioEl: null, filmTile: null, dc: null });
-    // If we have no local media, the remote's send-only tracks still create
-    // receive-only transceivers here automatically — so we receive them.
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
-      this._tuneVideoBitrate(pc);
-    }
+    const peer = { id: fromId, pc, stream: null, audioEl: null, filmTile: null, dc: null };
+    this.peers.set(fromId, peer);
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    // Reuse the offer's transceivers: make each sendrecv, store the sender, and
+    // attach our current track (if any). Guarantees audio+video senders exist.
+    pc.getTransceivers().forEach(tr => {
+      const kind = tr.receiver.track?.kind;
+      if (kind === 'audio') {
+        peer.audioSender = tr.sender;
+        const a = this.localStream?.getAudioTracks()[0];
+        if (a) { try { tr.direction = 'sendrecv'; } catch {} tr.sender.replaceTrack(a).catch(() => {}); }
+      } else if (kind === 'video') {
+        peer.videoSender = tr.sender;
+        const v = this.localStream?.getVideoTracks()[0];
+        if (v) { try { tr.direction = 'sendrecv'; } catch {} tr.sender.replaceTrack(v).catch(() => {}); }
+      }
+    });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     this.socket.sendAnswer(fromId, answer);
+    this._tuneVideoBitrate(pc);
   }
 
   async onAnswer({ fromId, answer }) {
