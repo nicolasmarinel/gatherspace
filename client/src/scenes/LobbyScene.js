@@ -145,7 +145,12 @@ export class LobbyScene extends Phaser.Scene {
   _initGoogleAuth(card) {
     const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     const box = card.querySelector('#gs-auth');
+    // Require sign-in when configured; guests are only allowed as a dev fallback
+    // (no Client ID set) so local development can't lock itself out.
+    this._requireAuth = !!CLIENT_ID;
     if (!CLIENT_ID) { box.style.display = 'none'; return; }
+
+    this._setJoinEnabled(card, false); // locked until signed in
 
     const btnHost = document.createElement('div');
     const status = document.createElement('div');
@@ -183,6 +188,7 @@ export class LobbyScene extends Phaser.Scene {
         `<img src="${p.picture}" referrerpolicy="no-referrer" style="width:22px;height:22px;border-radius:50%;vertical-align:middle;margin-right:6px;">` +
         `Signed in as ${p.name}`;
       status.style.color = '#86efac';
+      this._setJoinEnabled(card, true);
     } catch (e) {
       console.error('Google credential decode failed:', e);
       status.textContent = 'Sign-in failed — try again.';
@@ -190,7 +196,17 @@ export class LobbyScene extends Phaser.Scene {
     }
   }
 
+  _setJoinEnabled(card, enabled) {
+    const btn = card.querySelector('#gs-join');
+    if (!btn) return;
+    btn.disabled = !enabled;
+    btn.style.opacity = enabled ? '1' : '0.5';
+    btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+    btn.textContent = enabled ? 'Join Space →' : 'Sign in to join';
+  }
+
   _join() {
+    if (this._requireAuth && !this.profile) return; // sign-in required
     const name = (document.getElementById('gs-name')?.value || '').trim() || 'Anonymous';
     const roomId = (document.getElementById('gs-room')?.value || '').trim() || 'main';
 
