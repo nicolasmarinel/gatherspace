@@ -188,6 +188,29 @@ function rosterPayload() {
 }
 function broadcastPresence() { io.emit('presence', rosterPayload()); }
 
+// Is any connected player currently inside this zone?
+function zoneOccupied(zoneId) {
+  for (const room of rooms.values()) {
+    for (const pd of room.values()) {
+      if (pd.zone === zoneId) return true;
+    }
+  }
+  return false;
+}
+
+// Safeguard: a locked zone auto-unlocks once everyone has left it (walked out
+// or disconnected), so a locker who reloads can't lock themselves (and others) out.
+function releaseZoneIfEmpty(zoneId) {
+  if (zoneId == null) return;
+  const z = mapState.zones.find(zz => zz.id === zoneId);
+  if (z && z.locked && !zoneOccupied(zoneId)) {
+    z.locked = false;
+    io.emit('map-zone-locked', { id: zoneId, locked: false });
+    scheduleSave();
+    console.log(`Zone ${zoneId} auto-unlocked (empty)`);
+  }
+}
+
 io.on('connection', (socket) => {
   let currentRoom = null;
   let playerData = null;
@@ -345,6 +368,7 @@ io.on('connection', (socket) => {
 
   socket.on('move', ({ x, y, direction, isMoving, dancing, zone }) => {
     if (!currentRoom || !playerData) return;
+    const prevZone = playerData.zone;
     playerData.x = x;
     playerData.y = y;
     playerData.direction = direction;
@@ -352,6 +376,8 @@ io.on('connection', (socket) => {
     playerData.dancing = dancing;
     playerData.zone = zone ?? null; // authoritative private-zone membership
     socket.to(currentRoom).emit('player-moved', { id: socket.id, x, y, direction, isMoving, dancing, zone: playerData.zone });
+    // Left a (locked) zone? Auto-unlock it if it's now empty.
+    if (prevZone != null && prevZone !== playerData.zone) releaseZoneIfEmpty(prevZone);
   });
 
   // WebRTC signaling relay — server is a pure passthrough
@@ -377,6 +403,8 @@ io.on('connection', (socket) => {
       if (set) { set.delete(socket.id); if (!set.size) onlineByEmail.delete(myEmail); }
       broadcastPresence();
     }
+    // Auto-unlock the zone this player was in if they were the last one there
+    releaseZoneIfEmpty(playerData?.zone);
     console.log(`[${currentRoom}] ${playerData?.name} left`);
   });
 });
