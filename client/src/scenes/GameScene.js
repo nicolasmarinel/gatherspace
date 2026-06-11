@@ -17,6 +17,7 @@ export class GameScene extends Phaser.Scene {
     this.avatarIndex = data.avatarIndex;
     this.roomId = data.roomId;
     this.identity = data.identity || null; // stable per-account id (Google sub)
+    this.idToken = data.idToken || null;   // verified server-side on join
   }
 
   create() {
@@ -320,7 +321,7 @@ export class GameScene extends Phaser.Scene {
     this.socket = new SocketManager(this);
     this.socket.connect(
       this.roomId, this.playerName, this.avatarIndex,
-      this.localPlayer.sprite.x, this.localPlayer.sprite.y, this.identity
+      this.localPlayer.sprite.x, this.localPlayer.sprite.y, this.identity, this.idToken
     );
   }
 
@@ -558,6 +559,21 @@ export class GameScene extends Phaser.Scene {
     this.nearbyText?.setText(
       nearby.length ? `📡 Near: ${nearby.join(', ')}` : ''
     );
+  }
+
+  // Server refused the connection (allowlist / invalid token / auth required)
+  onAuthError(reason) {
+    const msg = reason === 'not-allowed'
+      ? 'This Google account isn’t on the guest list for this space.'
+      : 'Sign-in required — please reload and sign in again.';
+    const el = document.createElement('div');
+    el.style.cssText = `
+      position:fixed; inset:0; z-index:9999; display:flex; align-items:center;
+      justify-content:center; background:#0b1220; color:#e2e8f0;
+      font-family:monospace; font-size:16px; text-align:center; padding:24px;
+    `;
+    el.textContent = msg;
+    document.body.appendChild(el);
   }
 
   // Called by SocketManager when the socket reconnects with a new ID.

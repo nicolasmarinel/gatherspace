@@ -27,13 +27,14 @@ export class SocketManager {
     return id;
   }
 
-  connect(roomId, name, avatarIndex, x, y, identity = null) {
+  connect(roomId, name, avatarIndex, x, y, identity = null, idToken = null) {
     this._roomId = roomId;
     this._name = name;
     this._avatarIndex = avatarIndex;
     // A signed-in user's stable account id (Google sub) dedups across tabs /
     // reloads / devices; guests fall back to a per-tab random id.
     this._sessionId = identity || this._getOrCreateSessionId();
+    this._idToken = idToken;
     this._firstConnect = true;
 
     this.socket = io(SERVER_URL, { transports: ['websocket'] });
@@ -44,7 +45,7 @@ export class SocketManager {
         this._firstConnect = false;
         this.socket.emit('join-room', {
           roomId, name, avatar: avatarIndex, x, y,
-          sessionId: this._sessionId,
+          sessionId: this._sessionId, idToken: this._idToken,
         });
       } else {
         // Reconnect after a network blip — clean up stale state then re-join
@@ -56,9 +57,15 @@ export class SocketManager {
           avatar: this._avatarIndex,
           x: this.scene.localPlayer?.sprite.x ?? x,
           y: this.scene.localPlayer?.sprite.y ?? y,
-          sessionId: this._sessionId,
+          sessionId: this._sessionId, idToken: this._idToken,
         });
       }
+    });
+
+    // Server rejected the join (not allowed / invalid token / auth required)
+    this.socket.on('auth-error', (reason) => {
+      console.warn('Auth error:', reason);
+      this.scene.onAuthError?.(reason);
     });
 
     this.socket.on('room-state', (players) => {

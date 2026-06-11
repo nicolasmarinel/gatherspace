@@ -202,6 +202,7 @@ export class LobbyScene extends Phaser.Scene {
       }
 
       this.profile = { sub: p.sub, name: p.name, email: p.email, picture: p.picture };
+      this.idToken = resp.credential; // verified server-side on join
       const nameInput = card.querySelector('#gs-name');
       if (nameInput && !nameInput.value) nameInput.value = p.name || '';
       btnHost.style.display = 'none';
@@ -231,6 +232,7 @@ export class LobbyScene extends Phaser.Scene {
     this.scene.start('Game', {
       name, avatarIndex: this.selectedAvatar, roomId,
       identity: this.profile?.sub || null,
+      idToken: this.idToken || null,
     });
   }
 

@@ -4,6 +4,16 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { OAuth2Client } = require('google-auth-library');
+
+// Google sign-in (optional). When GOOGLE_CLIENT_ID is set, join requests must
+// carry a valid Google ID token; the verified `sub` is the authoritative
+// identity used for dedup, and the email is checked against the allowlist.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
+const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || process.env.VITE_ALLOWED_EMAILS || '')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+console.log(`Auth: ${googleClient ? 'Google sign-in required' : 'open (guest)'}; allowlist: ${ALLOWED_EMAILS.length || 'none'}`);
 
 const app = express();
 app.use(cors());
@@ -23,8 +33,51 @@ const io = new Server(httpServer, {
 
 // rooms: Map<roomId, Map<socketId, playerData>>
 const rooms = new Map();
-// sessions: Map<sessionId, { socketId, roomId }> — evict stale reconnects
-const sessions = new Map();
+
+// Remove (and disconnect) any socket already present under the same identity,
+// so one account can never occupy two slots. Scans the live room state, so it
+// can't be defeated by a stale lookup table.
+function evictIdentity(identity, exceptSocketId) {
+  if (!identity) return;
+  for (const [rId, room] of rooms) {
+    for (const [sid, pdata] of [...room]) {
+      if (sid !== exceptSocketId && pdata.sessionId === identity) {
+        room.delete(sid);
+        io.to(rId).emit('player-left', sid);
+        const sock = io.sockets.sockets.get(sid);
+        if (sock) sock.disconnect(true);
+        console.log(`[${rId}] Evicted duplicate session ${sid} for identity`);
+      }
+    }
+    if (room.size === 0) rooms.delete(rId);
+  }
+}
+
+// Resolve the trusted identity for a join. With Google configured, the ID token
+// must verify (and pass the allowlist); the verified sub is the identity. If the
+// token is missing/expired but the client supplies a sessionId (e.g. a reconnect
+// after the ~1h token TTL), fall back to it so long sessions aren't kicked.
+async function resolveIdentity({ idToken, sessionId }) {
+  if (googleClient && idToken) {
+    try {
+      const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
+      const payload = ticket.getPayload();
+      const email = (payload.email || '').toLowerCase();
+      if (ALLOWED_EMAILS.length && !ALLOWED_EMAILS.includes(email)) {
+        return { error: 'not-allowed' };
+      }
+      return { identity: payload.sub, name: payload.name, email };
+    } catch (e) {
+      // Expired/invalid token: only accept the client sessionId as a fallback
+      if (sessionId) return { identity: sessionId };
+      return { error: 'invalid-token' };
+    }
+  }
+  if (googleClient && !idToken) {
+    return sessionId ? { identity: sessionId } : { error: 'auth-required' };
+  }
+  return { identity: sessionId || null }; // guest / dev (no Google configured)
+}
 
 // ── shared, editable map state ──────────────────────────────────────────────
 // Authoritative across all clients. Persisted to a (Railway-volume) directory
@@ -86,32 +139,23 @@ io.on('connection', (socket) => {
   let currentRoom = null;
   let playerData = null;
 
-  socket.on('join-room', ({ roomId, name, avatar, x, y, sessionId }) => {
-    // Evict any stale connection sharing the same sessionId (same account /
-    // tab / reconnect). Forcibly disconnect the old socket so its live WebRTC
-    // peers tear down everywhere — otherwise it lingers as a ghost still
-    // delivering video, which is what produced duplicate tiles.
-    if (sessionId && sessions.has(sessionId)) {
-      const prev = sessions.get(sessionId);
-      if (prev.socketId !== socket.id) {
-        const prevSock = io.sockets.sockets.get(prev.socketId);
-        if (prevSock) {
-          prevSock.disconnect(true); // its own disconnect handler cleans the room + emits player-left
-        } else {
-          // Socket already gone — clean the room map ourselves
-          const prevRoom = rooms.get(prev.roomId);
-          if (prevRoom) {
-            prevRoom.delete(prev.socketId);
-            if (prevRoom.size === 0) rooms.delete(prev.roomId);
-          }
-          io.to(prev.roomId).emit('player-left', prev.socketId);
-        }
-        console.log(`[${prev.roomId}] Evicted stale session for ${name} (${prev.socketId})`);
-      }
+  socket.on('join-room', async ({ roomId, name, avatar, x, y, sessionId, idToken }) => {
+    const res = await resolveIdentity({ idToken, sessionId });
+    if (res.error) {
+      socket.emit('auth-error', res.error);
+      socket.disconnect(true);
+      return;
     }
+    const identity = res.identity;
+
+    // One account = one slot: remove/disconnect any other socket with this id.
+    evictIdentity(identity, socket.id);
 
     currentRoom = roomId;
-    playerData = { id: socket.id, name, avatar, x, y, direction: 'down', isMoving: false, sessionId };
+    playerData = {
+      id: socket.id, name: name || res.name, avatar, x, y,
+      direction: 'down', isMoving: false, sessionId: identity,
+    };
 
     if (!rooms.has(roomId)) rooms.set(roomId, new Map());
     const room = rooms.get(roomId);
@@ -123,8 +167,7 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     socket.to(roomId).emit('player-joined', playerData);
 
-    if (sessionId) sessions.set(sessionId, { socketId: socket.id, roomId });
-    console.log(`[${roomId}] ${name} joined (${socket.id}), room size: ${room.size}`);
+    console.log(`[${roomId}] ${playerData.name} joined (${socket.id}), room size: ${room.size}`);
 
     // Send the current shared map to the newcomer
     socket.emit('map-state', mapPayload());
@@ -212,12 +255,6 @@ io.on('connection', (socket) => {
     if (room) {
       room.delete(socket.id);
       if (room.size === 0) rooms.delete(currentRoom);
-    }
-    // Only remove the session entry if this socket is still the owner
-    // (a reconnect may have already replaced it with a new socketId)
-    if (playerData?.sessionId) {
-      const sess = sessions.get(playerData.sessionId);
-      if (sess?.socketId === socket.id) sessions.delete(playerData.sessionId);
     }
     io.to(currentRoom).emit('player-left', socket.id);
     console.log(`[${currentRoom}] ${playerData?.name} left`);
