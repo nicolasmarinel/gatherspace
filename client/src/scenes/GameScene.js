@@ -16,6 +16,7 @@ export class GameScene extends Phaser.Scene {
     this.playerName = data.name;
     this.avatarIndex = data.avatarIndex;
     this.roomId = data.roomId;
+    this.identity = data.identity || null; // stable per-account id (Google sub)
   }
 
   create() {
@@ -311,7 +312,7 @@ export class GameScene extends Phaser.Scene {
     this.socket = new SocketManager(this);
     this.socket.connect(
       this.roomId, this.playerName, this.avatarIndex,
-      this.localPlayer.sprite.x, this.localPlayer.sprite.y
+      this.localPlayer.sprite.x, this.localPlayer.sprite.y, this.identity
     );
   }
 

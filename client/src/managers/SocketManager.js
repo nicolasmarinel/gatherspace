@@ -27,11 +27,13 @@ export class SocketManager {
     return id;
   }
 
-  connect(roomId, name, avatarIndex, x, y) {
+  connect(roomId, name, avatarIndex, x, y, identity = null) {
     this._roomId = roomId;
     this._name = name;
     this._avatarIndex = avatarIndex;
-    this._sessionId = this._getOrCreateSessionId();
+    // A signed-in user's stable account id (Google sub) dedups across tabs /
+    // reloads / devices; guests fall back to a per-tab random id.
+    this._sessionId = identity || this._getOrCreateSessionId();
     this._firstConnect = true;
 
     this.socket = io(SERVER_URL, { transports: ['websocket'] });

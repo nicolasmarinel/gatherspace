@@ -7,6 +7,7 @@ export class LobbyScene extends Phaser.Scene {
     super('Lobby');
     this.selectedAvatar = 0;
     this._overlay = null;
+    this.profile = null; // { sub, name, email, picture } once signed in
   }
 
   create() {
@@ -41,6 +42,7 @@ export class LobbyScene extends Phaser.Scene {
     `;
 
     card.innerHTML = `
+      <div id="gs-auth" style="display:flex;flex-direction:column;gap:8px;align-items:center;"></div>
       <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#94a3b8">
         YOUR NAME
         <input id="gs-name" type="text" maxlength="20" placeholder="e.g. Nico"
@@ -132,8 +134,60 @@ export class LobbyScene extends Phaser.Scene {
     document.body.appendChild(overlay);
     this._overlay = overlay;
 
+    this._initGoogleAuth(card);
+
     // Auto-focus name field
     setTimeout(() => card.querySelector('#gs-name').focus(), 100);
+  }
+
+  // Renders "Sign in with Google" when VITE_GOOGLE_CLIENT_ID is configured.
+  // Without it, the sign-in box is hidden and the app works as a guest flow.
+  _initGoogleAuth(card) {
+    const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    const box = card.querySelector('#gs-auth');
+    if (!CLIENT_ID) { box.style.display = 'none'; return; }
+
+    const btnHost = document.createElement('div');
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:12px;color:#94a3b8;';
+    box.append(btnHost, status);
+
+    const ready = () => window.google && window.google.accounts && window.google.accounts.id;
+    const setup = () => {
+      window.google.accounts.id.initialize({
+        client_id: CLIENT_ID,
+        callback: (resp) => this._onGoogleCredential(resp, card, btnHost, status),
+      });
+      window.google.accounts.id.renderButton(btnHost, {
+        theme: 'filled_blue', size: 'large', text: 'signin_with', shape: 'pill',
+      });
+    };
+
+    if (ready()) { setup(); return; }
+    let tries = 0;
+    const iv = setInterval(() => {
+      if (ready()) { clearInterval(iv); setup(); }
+      else if (++tries > 50) { clearInterval(iv); status.textContent = 'Google sign-in unavailable — continuing as guest.'; }
+    }, 100);
+  }
+
+  _onGoogleCredential(resp, card, btnHost, status) {
+    try {
+      const part = resp.credential.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      const p = JSON.parse(decodeURIComponent(escape(atob(part))));
+      this.profile = { sub: p.sub, name: p.name, email: p.email, picture: p.picture };
+      const nameInput = card.querySelector('#gs-name');
+      if (nameInput && !nameInput.value) nameInput.value = p.name || '';
+      btnHost.style.display = 'none';
+      status.innerHTML =
+        `<img src="${p.picture}" referrerpolicy="no-referrer" style="width:22px;height:22px;border-radius:50%;vertical-align:middle;margin-right:6px;">` +
+        `Signed in as ${p.name}`;
+      status.style.color = '#86efac';
+    } catch (e) {
+      console.error('Google credential decode failed:', e);
+      status.textContent = 'Sign-in failed — try again.';
+      status.style.color = '#fca5a5';
+    }
   }
 
   _join() {
@@ -145,7 +199,10 @@ export class LobbyScene extends Phaser.Scene {
       this._overlay = null;
     }
 
-    this.scene.start('Game', { name, avatarIndex: this.selectedAvatar, roomId });
+    this.scene.start('Game', {
+      name, avatarIndex: this.selectedAvatar, roomId,
+      identity: this.profile?.sub || null,
+    });
   }
 
   shutdown() {
