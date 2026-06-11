@@ -49,14 +49,9 @@ export class MapEditor {
   // ── DOM ───────────────────────────────────────────────────────────────────
 
   _buildToggle() {
-    this._toggle = mk('button', `
-      position:fixed; bottom:14px; right:14px; z-index:110;
-      background:#1e293b; border:1px solid #334155; color:#e2e8f0;
-      font-family:monospace; font-size:13px; padding:8px 12px; border-radius:10px;
-      cursor:pointer;
-    `);
-    this._toggle.textContent = '🛠 Edit Map';
-    this._toggle.addEventListener('click', () => this.active ? this.exit() : this.enter());
+    // The editor is entered from the bottom bar's hammer; this button is kept
+    // (hidden) only so enter()/exit() can update it without extra null checks.
+    this._toggle = mk('button', 'display:none;');
     document.body.appendChild(this._toggle);
   }
 

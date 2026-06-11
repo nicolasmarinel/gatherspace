@@ -38,6 +38,7 @@ export class WebRTCManager {
     this.socket     = socketManager;
     this.localName  = localName;
     this.localProfile = { name: localName, email: profile.email || null, picture: profile.picture || null };
+    this.onEditMap = null; // set by the scene to toggle the map editor
     // Presence + direct messages
     this._presence = [];                  // [{ email, name, picture, online }]
     this._dmThreads = new Map();          // peerEmail -> [{ from, text, ts }]
@@ -99,28 +100,40 @@ export class WebRTCManager {
     this._filmstrip.appendChild(this._localTile.wrapper);
     document.body.appendChild(this._filmstrip);
 
-    // Fixed control bar — bottom-center
+    // Full-width control bar across the bottom of the screen
     this._bar = mk('div', `
-      position:fixed; bottom:14px; left:50%; transform:translateX(-50%); z-index:100;
-      display:flex; gap:6px; background:#1e293b; border:1px solid #334155;
-      border-radius:14px; padding:8px 14px; align-items:center;
+      position:fixed; left:0; right:0; bottom:0; z-index:130;
+      display:flex; align-items:center; gap:8px; padding:8px 14px;
+      background:#1e293b; border-top:1px solid #334155; font-family:monospace;
     `);
-    const barBtns = [
+    const sep = () => mk('div', 'width:1px;height:24px;background:#334155;margin:0 4px;');
+
+    // Left: avatar + display name
+    const avatar = document.createElement('img');
+    avatar.referrerPolicy = 'no-referrer';
+    if (this.localProfile.picture) avatar.src = this.localProfile.picture;
+    avatar.style.cssText = 'width:32px;height:32px;border-radius:50%;background:#334155;flex-shrink:0;object-fit:cover;';
+    const nameEl = mk('div', `
+      font-size:13px; color:#e2e8f0; font-weight:bold; white-space:nowrap;
+      max-width:180px; overflow:hidden; text-overflow:ellipsis;
+    `);
+    nameEl.textContent = this.localName;
+
+    const left = [avatar, nameEl, sep(),
       this._ctrlBtn('🎤', 'Mute mic',       'mute', () => this._toggleMute()),
       this._ctrlBtn('📷', 'Hide camera',    'cam',  () => this._toggleCam()),
       this._ctrlBtn('👁️', 'Hide self-view', 'self', () => this._toggleSelf()),
     ];
-    if (this._canScreenShare) {
-      barBtns.push(
-        mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-        this._ctrlBtn('🖥️', 'Share screen', 'screen', () => this._toggleScreenShare()),
-      );
-    }
-    barBtns.push(
-      mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-      this._ctrlBtn('⚙️', 'Settings', '', () => this._openSettings()),
-    );
-    this._bar.append(...barBtns);
+    if (this._canScreenShare) left.push(this._ctrlBtn('🖥️', 'Share screen', 'screen', () => this._toggleScreenShare()));
+    left.push(this._ctrlBtn('⚙️', 'Settings', '', () => this._openSettings()));
+
+    const spacer = mk('div', 'flex:1;');
+
+    // Right (right-aligned): hammer then messages, so messages is right-most
+    this._editBarBtn = this._ctrlBtn('🛠', 'Edit map', '', () => this.onEditMap?.());
+    this._dmBarBtn = this._ctrlBtn('💬', 'Messages', '', () => this._openMessages());
+
+    this._bar.append(...left, spacer, this._editBarBtn, this._dmBarBtn);
     document.body.appendChild(this._bar);
 
     // Status badge — top-right
@@ -1223,10 +1236,14 @@ export class WebRTCManager {
     this._chatMinimized = !this._chatMinimized;
     const hide = this._chatMinimized;
     this._chatBody.style.display = hide ? 'none' : 'flex';
-    this._chat.style.bottom = hide ? 'auto' : '0';
+    // When expanded, stop above the bottom bar so the input isn't hidden
+    this._chat.style.bottom = hide ? 'auto' : '56px';
     this._chatMinBtn.textContent = hide ? '+' : '–';
     this._chatMinBtn.title = hide ? 'Expand' : 'Minimize';
   }
+
+  // Bar "messages" button: open/close the side panel
+  _openMessages() { this._toggleChatMinimize(); }
 
   // Switch to the nearby view when a data channel opens (panel stays at its
   // current minimized/expanded state; new messages surface via the badge).

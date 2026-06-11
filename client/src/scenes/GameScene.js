@@ -48,7 +48,15 @@ export class GameScene extends Phaser.Scene {
     this._setupKeys();
     this._setupJoystick();
     this._setupZoom();
-    if (this._hasBg) this.mapEditor = new MapEditor(this);
+    if (this._hasBg) {
+      this.mapEditor = new MapEditor(this);
+      // The bottom bar's hammer drives the editor
+      if (this.webRTC) {
+        this.webRTC.onEditMap = () => {
+          this.mapEditor.active ? this.mapEditor.exit() : this.mapEditor.enter();
+        };
+      }
+    }
   }
 
   // ── world ─────────────────────────────────────────────────────────────────
@@ -434,10 +442,10 @@ export class GameScene extends Phaser.Scene {
       else if (e.key === '-' || e.key === '_') this._applyZoom(this._zoom - 0.15);
     });
 
-    // On-screen zoom widget (also for touch) — bottom-left, above the HUD text
+    // On-screen zoom widget (also for touch) — bottom-left, above the control bar
     const wrap = document.createElement('div');
     wrap.style.cssText = `
-      position:fixed; bottom:54px; left:14px; z-index:100; display:flex; gap:6px;
+      position:fixed; bottom:62px; left:14px; z-index:120; display:flex; gap:6px;
     `;
     const mkBtn = (label, fn) => {
       const b = document.createElement('button');
@@ -470,19 +478,12 @@ export class GameScene extends Phaser.Scene {
     // zone's own tiles is darkened (depth 9 — above world/avatars, below HUD).
     this._darkGfx = this.add.graphics().setDepth(9);
 
-    const style = (s) => ({
-      fontSize: s, color: '#e2e8f0', fontFamily: 'monospace',
-      backgroundColor: '#1a202ccc', padding: { x: 6, y: 3 }
-    });
-
-    // Name + move hint live bottom-left; the top-left is now the video filmstrip
-    this.add.text(14, this.scale.height - 48, this.playerName, style('14px'))
-      .setScrollFactor(0).setDepth(10);
-
-    const hint = this._isMobile ? 'Touch & drag to move' : 'Move: WASD / Arrows  ·  Zoom: + / −  ·  Dance: Z';
-    this.add.text(14, this.scale.height - 26, hint, {
-      fontSize: '12px', color: '#4b5563', fontFamily: 'monospace'
-    }).setScrollFactor(0).setDepth(10);
+    // Name now lives in the bottom bar. Keep a small controls hint top-center.
+    const hint = this._isMobile ? 'Touch & drag to move' : 'WASD / Arrows · Zoom + / − · Dance Z';
+    this.add.text(this.scale.width / 2, this.scale.height - 78, hint, {
+      fontSize: '12px', color: '#475569', fontFamily: 'monospace',
+      backgroundColor: '#1a202ccc', padding: { x: 6, y: 3 },
+    }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
 
     this.nearbyText = this.add.text(this.scale.width / 2, 14, '', {
       fontSize: '13px', color: '#86efac', fontFamily: 'monospace',
