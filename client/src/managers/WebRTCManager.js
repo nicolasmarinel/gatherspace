@@ -695,35 +695,41 @@ export class WebRTCManager {
   }
 
   // Pick the column/row split that yields the largest 16:9 tile in the
-  // available area (so the grid always fits without scrolling). If the
-  // resulting cells are close to 16:9, show the full frame (contain); if the
-  // layout forces a different shape, reframe to fill it (cover). Shared
-  // screens always stay 'contain' so their content is never cropped.
+  // available area (so the grid always fits without scrolling). A cell is never
+  // allowed to get too wide-and-short (MAX_CELL_ASPECT) — when the window is
+  // narrow, that constraint forces the grid to add a column and shrink the
+  // tiles instead of leaving one column of wide strips.
   _applyGridLayout() {
     const grid = this._gridEl;
     const n = this._gridCount;
     if (!grid || !n) return;
 
     const GAP = 10, PAD = 14;
+    const MAX_CELL_ASPECT = 1.9; // height must be at least ~1/1.9 of width
     const rect = grid.getBoundingClientRect();
     const W = (rect.width  || window.innerWidth)  - PAD * 2;
     const H = (rect.height || window.innerHeight) - PAD * 2;
 
-    let best = { cols: 1, rows: n, area: -1, cellW: W, cellH: H };
+    let best = null;      // best layout respecting the aspect constraint
+    let fallback = null;  // best overall, used only if nothing satisfies it
     for (let cols = 1; cols <= n; cols++) {
       const rows = Math.ceil(n / cols);
       const cellW = (W - (cols - 1) * GAP) / cols;
       const cellH = (H - (rows - 1) * GAP) / rows;
+      if (cellW <= 0 || cellH <= 0) continue;
       // largest 16:9 tile that fits inside this cell
       const tileW = Math.min(cellW, cellH * 16 / 9);
       const area = tileW * (tileW * 9 / 16);
-      if (area > best.area) best = { cols, rows, area, cellW, cellH };
+      const cand = { cols, rows, area, cellW, cellH };
+      if (!fallback || area > fallback.area) fallback = cand;
+      if (cellW / cellH <= MAX_CELL_ASPECT && (!best || area > best.area)) best = cand;
     }
+    const chosen = best || fallback;
 
-    grid.style.gridTemplateColumns = `repeat(${best.cols}, 1fr)`;
-    grid.style.gridTemplateRows    = `repeat(${best.rows}, 1fr)`;
+    grid.style.gridTemplateColumns = `repeat(${chosen.cols}, 1fr)`;
+    grid.style.gridTemplateRows    = `repeat(${chosen.rows}, 1fr)`;
 
-    const cellAspect = best.cellW / best.cellH;
+    const cellAspect = chosen.cellW / chosen.cellH;
     const within16by9 = Math.abs(cellAspect - 16 / 9) / (16 / 9) <= 0.25;
     const camFit = within16by9 ? 'contain' : 'cover';
     this._gridVideos.forEach(({ video, isScreen }) => {

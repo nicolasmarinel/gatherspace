@@ -97,12 +97,18 @@ export class SocketManager {
   sendMove(x, y, direction, isMoving, dancing = false) {
     const now = Date.now();
     this._pendingMove = { x, y, direction, isMoving, dancing };
-    if (now - this._lastMoveSent >= 50) {
+    const elapsed = now - this._lastMoveSent;
+    if (elapsed >= 50) {
       this._flushMove();
+    } else if (!this._moveTimer) {
+      // Trailing flush so the final state (e.g. the "stopped" frame) is always
+      // delivered — otherwise peers can keep playing the walk animation.
+      this._moveTimer = setTimeout(() => this._flushMove(), 50 - elapsed);
     }
   }
 
   _flushMove() {
+    if (this._moveTimer) { clearTimeout(this._moveTimer); this._moveTimer = null; }
     if (!this._pendingMove) return;
     this.socket?.emit('move', this._pendingMove);
     this._lastMoveSent = Date.now();
