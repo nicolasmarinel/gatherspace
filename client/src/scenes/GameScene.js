@@ -375,11 +375,15 @@ export class GameScene extends Phaser.Scene {
     }
     const rp = new RemotePlayer(this, data.id, data.x, data.y, data.avatar ?? 0, data.name);
     rp.sessionId = data.sessionId;
+    rp.zoneId = data.zone ?? null;
     this.remotePlayers.set(data.id, rp);
   }
 
-  updateRemotePlayer(id, x, y, direction, isMoving, dancing) {
-    this.remotePlayers.get(id)?.moveTo(x, y, direction, isMoving, dancing);
+  updateRemotePlayer(id, x, y, direction, isMoving, dancing, zone) {
+    const rp = this.remotePlayers.get(id);
+    if (!rp) return;
+    rp.moveTo(x, y, direction, isMoving, dancing);
+    rp.zoneId = zone ?? null;
   }
 
   removeRemotePlayer(id) {
@@ -595,18 +599,19 @@ export class GameScene extends Phaser.Scene {
     }
     if (this._joystick) this._drawJoystick();
 
-    // Broadcast on movement OR any pose change (direction / walking / dancing),
-    // so idle dances propagate even though position didn't change.
+    // Broadcast on movement OR any state change (direction / walking / dancing /
+    // zone), so idle dances and zone crossings propagate even without movement.
     const lp = this.localPlayer;
-    const sig = `${lp.direction}|${lp.isMoving}|${lp.dancing}`;
+    const localZone = this._zoneAt(lp.sprite.x, lp.sprite.y);
+    const sig = `${lp.direction}|${lp.isMoving}|${lp.dancing}|${localZone}`;
     if (moved || sig !== this._lastSendSig) {
-      this.socket?.sendMove(lp.sprite.x, lp.sprite.y, lp.direction, lp.isMoving, lp.dancing);
+      this.socket?.sendMove(lp.sprite.x, lp.sprite.y, lp.direction, lp.isMoving, lp.dancing, localZone);
       this._lastSendSig = sig;
     }
 
     this.remotePlayers.forEach(rp => rp.update(delta));
 
-    this._checkProximity();
+    this._checkProximity(localZone);
 
     // Y-sort depth so players behind furniture appear behind it
     const localDepth = 3 + this.localPlayer.sprite.y / 10000;
@@ -620,14 +625,14 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  _checkProximity() {
+  _checkProximity(localZone = this._zoneAt(this.localPlayer.sprite.x, this.localPlayer.sprite.y)) {
     const lx = this.localPlayer.sprite.x;
     const ly = this.localPlayer.sprite.y;
-    const localZone = this._zoneAt(lx, ly);
     const nearby = [];
 
     this.remotePlayers.forEach((rp, id) => {
-      const remoteZone = this._zoneAt(rp.sprite.x, rp.sprite.y);
+      // Authoritative zone the peer reported (not guessed from a lerped sprite)
+      const remoteZone = rp.zoneId ?? null;
 
       if (localZone !== null || remoteZone !== null) {
         // Private-zone rules: a call connects only when BOTH are in the same

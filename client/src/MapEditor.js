@@ -98,6 +98,12 @@ export class MapEditor {
     this._zoneNameInput.type = 'text';
     this._zoneNameInput.placeholder = 'Zone name';
     this._zoneNameInput.maxLength = 40;
+    // Keep keystrokes from reaching Phaser's keyboard (so WASD types normally)
+    this._zoneNameInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); this._saveZone(); }
+      else if (e.key === 'Escape') this._zoneNameInput.blur();
+      e.stopPropagation();
+    });
     this._zoneSaveBtn = this._btn('💾 Save zone', () => this._saveZone());
     this._zoneClearBtn = this._btn('Clear', () => this._clearZone());
     this._zoneSelect = mk('select', `

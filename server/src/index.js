@@ -204,7 +204,7 @@ io.on('connection', (socket) => {
     currentRoom = roomId;
     playerData = {
       id: socket.id, name: name || res.name, avatar, x, y,
-      direction: 'down', isMoving: false, sessionId: identity,
+      direction: 'down', isMoving: false, zone: null, sessionId: identity,
     };
 
     if (!rooms.has(roomId)) rooms.set(roomId, new Map());
@@ -331,14 +331,15 @@ io.on('connection', (socket) => {
     if (applied.length) { io.emit('map-collision', { cells: applied }); scheduleSave(); }
   });
 
-  socket.on('move', ({ x, y, direction, isMoving, dancing }) => {
+  socket.on('move', ({ x, y, direction, isMoving, dancing, zone }) => {
     if (!currentRoom || !playerData) return;
     playerData.x = x;
     playerData.y = y;
     playerData.direction = direction;
     playerData.isMoving = isMoving;
     playerData.dancing = dancing;
-    socket.to(currentRoom).emit('player-moved', { id: socket.id, x, y, direction, isMoving, dancing });
+    playerData.zone = zone ?? null; // authoritative private-zone membership
+    socket.to(currentRoom).emit('player-moved', { id: socket.id, x, y, direction, isMoving, dancing, zone: playerData.zone });
   });
 
   // WebRTC signaling relay — server is a pure passthrough
