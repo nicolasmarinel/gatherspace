@@ -43,28 +43,30 @@ export class LobbyScene extends Phaser.Scene {
 
     card.innerHTML = `
       <div id="gs-auth" style="display:flex;flex-direction:column;gap:8px;align-items:center;"></div>
-      <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#94a3b8">
-        YOUR NAME
-        <input id="gs-name" type="text" maxlength="20" placeholder="e.g. Nico"
-          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;
-                 padding:10px 12px;font-size:16px;font-family:monospace;outline:none;">
-      </label>
-      <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#94a3b8">
-        ROOM ID
-        <input id="gs-room" type="text" maxlength="24" value="main"
-          style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;
-                 padding:10px 12px;font-size:16px;font-family:monospace;outline:none;">
-      </label>
-      <div style="font-size:13px;color:#94a3b8">AVATAR COLOR</div>
-      <div id="gs-avatars" style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"></div>
-      <div id="gs-custom-label" style="font-size:13px;color:#94a3b8">CUSTOM AVATARS</div>
-      <div id="gs-custom" style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"></div>
-      <button id="gs-join"
-        style="background:#2563eb;color:#fff;border:none;border-radius:8px;
-               padding:12px;font-size:17px;font-family:monospace;font-weight:bold;
-               cursor:pointer;margin-top:4px;">
-        Join Space →
-      </button>
+      <div id="gs-form" style="display:flex;flex-direction:column;gap:16px;">
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#94a3b8">
+          YOUR NAME
+          <input id="gs-name" type="text" maxlength="20" placeholder="e.g. Nico"
+            style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;
+                   padding:10px 12px;font-size:16px;font-family:monospace;outline:none;">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#94a3b8">
+          ROOM ID
+          <input id="gs-room" type="text" maxlength="24" value="main"
+            style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;
+                   padding:10px 12px;font-size:16px;font-family:monospace;outline:none;">
+        </label>
+        <div style="font-size:13px;color:#94a3b8">AVATAR COLOR</div>
+        <div id="gs-avatars" style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"></div>
+        <div id="gs-custom-label" style="font-size:13px;color:#94a3b8">CUSTOM AVATARS</div>
+        <div id="gs-custom" style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"></div>
+        <button id="gs-join"
+          style="background:#2563eb;color:#fff;border:none;border-radius:8px;
+                 padding:12px;font-size:17px;font-family:monospace;font-weight:bold;
+                 cursor:pointer;margin-top:4px;">
+          Join Space →
+        </button>
+      </div>
     `;
 
     // Clears the selection ring on every avatar button (colors + custom)
@@ -145,16 +147,22 @@ export class LobbyScene extends Phaser.Scene {
   _initGoogleAuth(card) {
     const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     const box = card.querySelector('#gs-auth');
+    const form = card.querySelector('#gs-form');
     // Require sign-in when configured; guests are only allowed as a dev fallback
     // (no Client ID set) so local development can't lock itself out.
     this._requireAuth = !!CLIENT_ID;
+    // Optional allowlist of permitted emails (comma-separated). Empty = any
+    // signed-in Google user is allowed.
+    this._allowed = (import.meta.env.VITE_ALLOWED_EMAILS || '')
+      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
     if (!CLIENT_ID) { box.style.display = 'none'; return; }
 
-    this._setJoinEnabled(card, false); // locked until signed in
+    form.style.display = 'none'; // hide the form until the user signs in
 
     const btnHost = document.createElement('div');
     const status = document.createElement('div');
-    status.style.cssText = 'font-size:12px;color:#94a3b8;';
+    status.style.cssText = 'font-size:12px;color:#94a3b8;text-align:center;';
     box.append(btnHost, status);
 
     const ready = () => window.google && window.google.accounts && window.google.accounts.id;
@@ -172,7 +180,7 @@ export class LobbyScene extends Phaser.Scene {
     let tries = 0;
     const iv = setInterval(() => {
       if (ready()) { clearInterval(iv); setup(); }
-      else if (++tries > 50) { clearInterval(iv); status.textContent = 'Google sign-in unavailable — continuing as guest.'; }
+      else if (++tries > 50) { clearInterval(iv); status.textContent = 'Google sign-in unavailable.'; }
     }, 100);
   }
 
@@ -180,6 +188,19 @@ export class LobbyScene extends Phaser.Scene {
     try {
       const part = resp.credential.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
       const p = JSON.parse(decodeURIComponent(escape(atob(part))));
+      const email = (p.email || '').toLowerCase();
+
+      // Enforce the allowlist (if configured)
+      if (this._allowed.length && !this._allowed.includes(email)) {
+        this.profile = null;
+        window.google?.accounts?.id?.disableAutoSelect?.();
+        status.innerHTML = `${p.email} isn’t on the guest list for this space.`;
+        status.style.color = '#fca5a5';
+        card.querySelector('#gs-form').style.display = 'none';
+        btnHost.style.display = ''; // let them try another account
+        return;
+      }
+
       this.profile = { sub: p.sub, name: p.name, email: p.email, picture: p.picture };
       const nameInput = card.querySelector('#gs-name');
       if (nameInput && !nameInput.value) nameInput.value = p.name || '';
@@ -188,21 +209,13 @@ export class LobbyScene extends Phaser.Scene {
         `<img src="${p.picture}" referrerpolicy="no-referrer" style="width:22px;height:22px;border-radius:50%;vertical-align:middle;margin-right:6px;">` +
         `Signed in as ${p.name}`;
       status.style.color = '#86efac';
-      this._setJoinEnabled(card, true);
+      card.querySelector('#gs-form').style.display = 'flex';
+      setTimeout(() => nameInput?.focus(), 50);
     } catch (e) {
       console.error('Google credential decode failed:', e);
       status.textContent = 'Sign-in failed — try again.';
       status.style.color = '#fca5a5';
     }
-  }
-
-  _setJoinEnabled(card, enabled) {
-    const btn = card.querySelector('#gs-join');
-    if (!btn) return;
-    btn.disabled = !enabled;
-    btn.style.opacity = enabled ? '1' : '0.5';
-    btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
-    btn.textContent = enabled ? 'Join Space →' : 'Sign in to join';
   }
 
   _join() {

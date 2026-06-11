@@ -290,7 +290,15 @@ export class GameScene extends Phaser.Scene {
 
   addRemotePlayer(data) {
     if (this.remotePlayers.has(data.id)) return;
+    // Dedup by account: if another socket with the same identity is still
+    // around (a ghost), drop it so we never show the same person twice.
+    if (data.sessionId) {
+      this.remotePlayers.forEach((rp, id) => {
+        if (id !== data.id && rp.sessionId === data.sessionId) this.removeRemotePlayer(id);
+      });
+    }
     const rp = new RemotePlayer(this, data.id, data.x, data.y, data.avatar ?? 0, data.name);
+    rp.sessionId = data.sessionId;
     this.remotePlayers.set(data.id, rp);
   }
 

@@ -87,16 +87,25 @@ io.on('connection', (socket) => {
   let playerData = null;
 
   socket.on('join-room', ({ roomId, name, avatar, x, y, sessionId }) => {
-    // Evict any stale connection sharing the same sessionId (e.g. after a network blip)
+    // Evict any stale connection sharing the same sessionId (same account /
+    // tab / reconnect). Forcibly disconnect the old socket so its live WebRTC
+    // peers tear down everywhere — otherwise it lingers as a ghost still
+    // delivering video, which is what produced duplicate tiles.
     if (sessionId && sessions.has(sessionId)) {
       const prev = sessions.get(sessionId);
       if (prev.socketId !== socket.id) {
-        const prevRoom = rooms.get(prev.roomId);
-        if (prevRoom) {
-          prevRoom.delete(prev.socketId);
-          if (prevRoom.size === 0) rooms.delete(prev.roomId);
+        const prevSock = io.sockets.sockets.get(prev.socketId);
+        if (prevSock) {
+          prevSock.disconnect(true); // its own disconnect handler cleans the room + emits player-left
+        } else {
+          // Socket already gone — clean the room map ourselves
+          const prevRoom = rooms.get(prev.roomId);
+          if (prevRoom) {
+            prevRoom.delete(prev.socketId);
+            if (prevRoom.size === 0) rooms.delete(prev.roomId);
+          }
+          io.to(prev.roomId).emit('player-left', prev.socketId);
         }
-        io.to(prev.roomId).emit('player-left', prev.socketId);
         console.log(`[${prev.roomId}] Evicted stale session for ${name} (${prev.socketId})`);
       }
     }
