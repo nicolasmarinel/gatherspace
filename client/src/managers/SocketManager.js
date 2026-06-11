@@ -98,6 +98,8 @@ export class SocketManager {
     this.socket.on('map-object-above',   ({ id, above }) => this.scene.onMapObjectAbove?.(id, above));
     this.socket.on('map-object-removed', ({ id }) => this.scene.onMapObjectRemoved?.(id));
     this.socket.on('map-collision',      ({ cells }) => this.scene.onMapCollision?.(cells));
+    this.socket.on('map-zone-added',     (z) => this.scene.onMapZoneAdded?.(z));
+    this.socket.on('map-zone-removed',   ({ id }) => this.scene.onMapZoneRemoved?.(id));
 
     this.socket.on('disconnect', (reason) => console.log('Socket disconnected:', reason));
     this.socket.on('connect_error', (err) => console.error('Connection error:', err));
@@ -139,6 +141,8 @@ export class SocketManager {
   sendMapAbove(id, above) { this.socket?.emit('map-object-above', { id, above }); }
   sendMapDelete(id)     { this.socket?.emit('map-delete-object', { id }); }
   sendMapCollision(cells) { this.socket?.emit('map-collision', { cells }); }
+  sendZoneAdd(name, cells) { this.socket?.emit('map-zone-add', { name, cells }); }
+  sendZoneDelete(id)       { this.socket?.emit('map-zone-delete', { id }); }
 
   get id() { return this.socket?.id; }
 

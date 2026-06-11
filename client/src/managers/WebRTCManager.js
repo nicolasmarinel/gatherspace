@@ -1037,6 +1037,7 @@ export class WebRTCManager {
     `);
     const hdrTitle = mk('span', 'font-family:monospace;font-size:13px;color:#94a3b8;font-weight:bold;flex:1;');
     hdrTitle.textContent = '💬 Nearby Chat';
+    this._chatTitle = hdrTitle;
     this._unreadBadge = mk('span', `
       background:#ef4444; color:#fff; font-size:10px;
       border-radius:10px; padding:1px 6px; display:none; font-family:monospace;
@@ -1685,6 +1686,11 @@ export class WebRTCManager {
 
   getUserGain(peerId) {
     return this.peers.get(peerId)?.userGain ?? 1;
+  }
+
+  // Show the current private zone's name in the chat header (or the default).
+  setZoneLabel(name) {
+    if (this._chatTitle) this._chatTitle.textContent = name ? `🔒 ${name}` : '💬 Nearby Chat';
   }
 
   _setMaximizer(on) {

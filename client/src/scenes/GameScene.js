@@ -114,7 +114,56 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < this.collisionState.length; i++) {
       if (this.collisionState[i]) this._addCollisionZone(i);
     }
+
+    this.zones = m.zones || [];
+    this._rebuildZoneIndex();
+
     this.mapEditor?.onMapReloaded();
+  }
+
+  // ── private zones ───────────────────────────────────────────────────────────
+
+  _rebuildZoneIndex() {
+    this._cellZone = new Map();   // tile index -> zone id
+    this._zoneById = new Map();   // zone id -> zone
+    (this.zones || []).forEach(z => {
+      this._zoneById.set(z.id, z);
+      z.cells.forEach(c => this._cellZone.set(c, z.id));
+    });
+  }
+
+  // Zone id at a world position, or null if on the open grounds
+  _zoneAt(x, y) {
+    if (!this._cellZone || !this._mapTile) return null;
+    const T = this._mapTile, W = this._mapTilesW;
+    const col = Math.floor(x / T), row = Math.floor(y / T);
+    if (col < 0 || row < 0 || col >= W || row >= this._mapTilesH) return null;
+    return this._cellZone.get(row * W + col) ?? null;
+  }
+
+  onMapZoneAdded(z) {
+    if (!this._hasBg) return;
+    this.zones = (this.zones || []).filter(x => x.id !== z.id).concat(z);
+    this._rebuildZoneIndex();
+    this.mapEditor?.onZonesReloaded();
+    this._currentZoneId = undefined; // force indicator refresh next frame
+  }
+
+  onMapZoneRemoved(id) {
+    this.zones = (this.zones || []).filter(z => z.id !== id);
+    this._rebuildZoneIndex();
+    this.mapEditor?.onZonesReloaded();
+    this._currentZoneId = undefined;
+  }
+
+  // Darken the world + label the chat with the zone name when the local player
+  // is inside a private zone.
+  _updateLocalZone(localZone) {
+    if (localZone === this._currentZoneId) return;
+    this._currentZoneId = localZone;
+    const zone = localZone != null ? this._zoneById?.get(localZone) : null;
+    this._darken?.setVisible(!!zone);
+    this.webRTC?.setZoneLabel(zone ? zone.name : null);
   }
 
   // Objects layer by their z value. Normal objects sit in the band (1,2) —
@@ -385,6 +434,12 @@ export class GameScene extends Phaser.Scene {
   // ── HUD ───────────────────────────────────────────────────────────────────
 
   _setupHUD() {
+    // Full-screen dimmer shown while the local player is inside a private zone.
+    // Sits above the world/avatars (depth 9) but below the HUD text (depth 10);
+    // DOM overlays (video, chat, controls) render above the canvas regardless.
+    this._darken = this.add.rectangle(0, 0, 8000, 8000, 0x00010a, 0.4)
+      .setOrigin(0).setScrollFactor(0).setDepth(9).setVisible(false);
+
     const style = (s) => ({
       fontSize: s, color: '#e2e8f0', fontFamily: 'monospace',
       backgroundColor: '#1a202ccc', padding: { x: 6, y: 3 }
@@ -542,23 +597,39 @@ export class GameScene extends Phaser.Scene {
   _checkProximity() {
     const lx = this.localPlayer.sprite.x;
     const ly = this.localPlayer.sprite.y;
+    const localZone = this._zoneAt(lx, ly);
     const nearby = [];
 
     this.remotePlayers.forEach((rp, id) => {
-      const dist = Phaser.Math.Distance.Between(lx, ly, rp.sprite.x, rp.sprite.y);
+      const remoteZone = this._zoneAt(rp.sprite.x, rp.sprite.y);
 
-      if (dist < PROXIMITY_OPEN_DIST) {
-        nearby.push(rp.name);
-        this.webRTC?.onNearby(id, rp.name);
-        this.webRTC?.setVolume(id, 1 - dist / PROXIMITY_OPEN_DIST);
-      } else if (dist > PROXIMITY_CLOSE_DIST) {
-        this.webRTC?.closePeer(id);
+      if (localZone !== null || remoteZone !== null) {
+        // Private-zone rules: a call connects only when BOTH are in the same
+        // zone (any distance). One in / one out (or different zones) = no call.
+        if (localZone !== null && localZone === remoteZone) {
+          nearby.push(rp.name);
+          this.webRTC?.onNearby(id, rp.name);
+          this.webRTC?.setVolume(id, 1); // full volume inside a shared room
+        } else {
+          this.webRTC?.closePeer(id);
+        }
+      } else {
+        // Open grounds: distance-based proximity with hysteresis
+        const dist = Phaser.Math.Distance.Between(lx, ly, rp.sprite.x, rp.sprite.y);
+        if (dist < PROXIMITY_OPEN_DIST) {
+          nearby.push(rp.name);
+          this.webRTC?.onNearby(id, rp.name);
+          this.webRTC?.setVolume(id, 1 - dist / PROXIMITY_OPEN_DIST);
+        } else if (dist > PROXIMITY_CLOSE_DIST) {
+          this.webRTC?.closePeer(id);
+        }
       }
     });
 
     this.nearbyText?.setText(
       nearby.length ? `📡 Near: ${nearby.join(', ')}` : ''
     );
+    this._updateLocalZone(localZone);
   }
 
   // Server refused the connection (allowlist / invalid token / auth required)

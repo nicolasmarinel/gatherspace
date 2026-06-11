@@ -95,7 +95,13 @@ function normalizeMap(m) {
   }));
   let maxId = 0;
   placements.forEach(p => { const n = parseInt(String(p.id).replace(/\D/g, ''), 10); if (n > maxId) maxId = n; });
-  return { dims: m.dims, tile: m.tile, collisions: col, placements, nextId: maxId + 1 };
+  // Private zones: named, contiguous tile groups
+  const zones = (m.zones || []).map((z, i) => ({
+    id: z.id ?? i + 1, name: String(z.name || `Zone ${i + 1}`).slice(0, 40),
+    cells: Array.isArray(z.cells) ? z.cells.filter(Number.isInteger) : [],
+  }));
+  const nextZoneId = zones.reduce((mx, z) => Math.max(mx, z.id), 0) + 1;
+  return { dims: m.dims, tile: m.tile, collisions: col, placements, zones, nextId: maxId + 1, nextZoneId };
 }
 
 function loadMap() {
@@ -121,6 +127,7 @@ function scheduleSave() {
         dims: mapState.dims, tile: mapState.tile,
         collisions: Buffer.from(Uint8Array.from(mapState.collisions)).toString('base64'),
         placements: mapState.placements,
+        zones: mapState.zones,
       }));
     } catch (e) { console.error('Map save failed:', e.message); }
   }, 1000);
@@ -132,6 +139,7 @@ function mapPayload() {
     dims: mapState.dims, tile: mapState.tile,
     collisions: Buffer.from(Uint8Array.from(mapState.collisions)).toString('base64'),
     placements: mapState.placements,
+    zones: mapState.zones,
   };
 }
 
@@ -213,6 +221,26 @@ io.on('connection', (socket) => {
     if (i === -1) return;
     mapState.placements.splice(i, 1);
     io.emit('map-object-removed', { id });
+    scheduleSave();
+  });
+
+  socket.on('map-zone-add', ({ name, cells }) => {
+    if (typeof name !== 'string' || !name.trim() || !Array.isArray(cells) || !cells.length) return;
+    const zone = {
+      id: mapState.nextZoneId++,
+      name: name.trim().slice(0, 40),
+      cells: cells.filter(Number.isInteger),
+    };
+    mapState.zones.push(zone);
+    io.emit('map-zone-added', zone);
+    scheduleSave();
+  });
+
+  socket.on('map-zone-delete', ({ id }) => {
+    const i = mapState.zones.findIndex(z => z.id === id);
+    if (i === -1) return;
+    mapState.zones.splice(i, 1);
+    io.emit('map-zone-removed', { id });
     scheduleSave();
   });
 
