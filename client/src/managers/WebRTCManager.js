@@ -1049,6 +1049,12 @@ export class WebRTCManager {
       border-radius:10px; padding:1px 6px; display:none; font-family:monospace;
     `);
     this._unreadCount = 0;
+    // Global DM-unread badge (visible on the always-on-screen header)
+    this._dmBadge = mk('span', `
+      background:#ef4444; color:#fff; font-size:10px; font-weight:bold;
+      border-radius:10px; padding:1px 7px; display:none; font-family:monospace;
+    `);
+    this._dmBadge.title = 'Unread direct messages';
     this._chatMinimized = true;
     this._chatMinBtn = mk('button', `
       background:#334155; border:none; color:#e2e8f0; font-size:16px;
@@ -1057,7 +1063,7 @@ export class WebRTCManager {
     this._chatMinBtn.textContent = '+';
     this._chatMinBtn.title = 'Expand';
     this._chatMinBtn.addEventListener('click', () => this._toggleChatMinimize());
-    hdr.append(this._chatTitle, this._unreadBadge, this._chatMinBtn);
+    hdr.append(this._chatTitle, this._unreadBadge, this._dmBadge, this._chatMinBtn);
 
     // Body holds the two views; minimizing hides the body, leaving the header.
     this._chatBody = mk('div', 'flex:1; min-height:0; display:flex; flex-direction:column;');
@@ -1072,6 +1078,18 @@ export class WebRTCManager {
     this._chatBody.style.display = 'none';
     this._chat.style.bottom = 'auto';
     this._updatePanelMode();
+    this._ensureNotifyPermission();
+
+    // When refocusing with a thread open, mark it read + refresh
+    this._onWindowFocus = () => {
+      if (this._activeDM && !this._chatMinimized) {
+        this._dmUnread.set(this._activeDM, 0);
+        this._renderDMThread();
+        this._renderDMList();
+        this._refreshDMBadge();
+      }
+    };
+    window.addEventListener('focus', this._onWindowFocus);
   }
 
   // ── nearby (proximity) chat view ────────────────────────────────────────────
@@ -1201,6 +1219,7 @@ export class WebRTCManager {
   }
 
   _toggleChatMinimize() {
+    this._ensureNotifyPermission();
     this._chatMinimized = !this._chatMinimized;
     const hide = this._chatMinimized;
     this._chatBody.style.display = hide ? 'none' : 'flex';
@@ -1297,8 +1316,10 @@ export class WebRTCManager {
   }
 
   _openDM(email) {
+    this._ensureNotifyPermission();
     this._activeDM = email;
     this._dmUnread.set(email, 0);
+    this._refreshDMBadge();
     const u = this._presence.find(p => p.email === email);
     this._dmThreadName.textContent = u ? u.name : email;
     this._dmListEl.style.display = 'none';
@@ -1343,17 +1364,62 @@ export class WebRTCManager {
     const thread = this._dmThreads.get(peer) || [];
     thread.push(msg);
     this._dmThreads.set(peer, thread);
-    if (this._activeDM === peer && !this._chatMinimized) {
+
+    const isSelf = msg.from === this.localProfile.email;
+    const showingInline = this._activeDM === peer && !this._chatMinimized && !document.hidden;
+
+    if (showingInline) {
       this._renderDMThread();
-    } else if (msg.from !== this.localProfile.email) {
-      this._dmUnread.set(peer, (this._dmUnread.get(peer) || 0) + 1);
-      this._renderDMList();
-      if (this._chatMinimized) {
-        this._unreadCount++;
-        this._unreadBadge.textContent = this._unreadCount;
-        this._unreadBadge.style.display = 'inline';
-      }
+      return;
     }
+    if (isSelf) return; // our own message echoed back while elsewhere
+
+    // Unread: bump per-peer count + the global header badge, refresh list,
+    // and raise a desktop notification.
+    this._dmUnread.set(peer, (this._dmUnread.get(peer) || 0) + 1);
+    this._renderDMList();
+    this._refreshDMBadge();
+    const u = this._presence.find(p => p.email === peer);
+    this._notify(u ? u.name : peer, msg.text, peer);
+  }
+
+  _dmTotalUnread() {
+    let n = 0;
+    this._dmUnread.forEach(c => { n += c; });
+    return n;
+  }
+
+  _refreshDMBadge() {
+    if (!this._dmBadge) return;
+    const n = this._dmTotalUnread();
+    this._dmBadge.textContent = n > 99 ? '99+' : `✉ ${n}`;
+    this._dmBadge.style.display = n > 0 ? 'inline' : 'none';
+  }
+
+  // ── desktop notifications ───────────────────────────────────────────────────
+
+  _ensureNotifyPermission() {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+  }
+
+  _notify(title, body, peerEmail) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      const n = new Notification(`💬 ${title}`, {
+        body: (body || '').slice(0, 140),
+        tag: `gs-dm-${peerEmail}`,   // collapse repeats from the same person
+        renotify: true,
+      });
+      n.onclick = () => {
+        window.focus();
+        if (this._chatMinimized) this._toggleChatMinimize();
+        this._openDM(peerEmail);
+        n.close();
+      };
+    } catch { /* notifications unsupported in this context */ }
   }
 
   // ── media ─────────────────────────────────────────────────────────────────
@@ -1965,6 +2031,7 @@ export class WebRTCManager {
 
   destroy() {
     if (this._onEscKey) document.removeEventListener('keydown', this._onEscKey);
+    if (this._onWindowFocus) window.removeEventListener('focus', this._onWindowFocus);
     this.peers.forEach((_, id) => this.closePeer(id));
     this._stopScreenShare();
     this._denoiseNode?.destroy?.();
