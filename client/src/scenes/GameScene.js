@@ -204,7 +204,8 @@ export class GameScene extends Phaser.Scene {
       if (!z.locked || z.id === localZone) return; // unlocked, or I'm inside → passable
       z.cells.forEach(i => {
         const col = i % W, row = Math.floor(i / W);
-        const zone = this.add.zone(col * T + T / 2, row * T + T / 2, T, T);
+        // Shift the lock collision one tile up to correct a tested offset
+        const zone = this.add.zone(col * T + T / 2, (row - 1) * T + T / 2, T, T);
         this.physics.add.existing(zone, true);
         this._lockCollisionGroup.add(zone);
       });
