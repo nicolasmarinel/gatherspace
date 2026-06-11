@@ -6,6 +6,13 @@ import { SocketManager } from '../managers/SocketManager.js';
 import { WebRTCManager } from '../managers/WebRTCManager.js';
 import { MapEditor } from '../MapEditor.js';
 
+// Avatars sit at layer 0 (depth ~LAYER_BASE). Objects render at
+// LAYER_BASE + layer + foot-based y-sort, so an object's `layer` places it any
+// number of steps above (>0) or below (<0) avatars; layer 0 y-sorts with them.
+const LAYER_BASE = 4;
+const FOOT_DIV = 100000;   // within-layer y-sort granularity
+const NAME_DEPTH = 8.6;    // name tags above all object layers, below the dimmer (9)
+
 export class GameScene extends Phaser.Scene {
   constructor() {
     super('Game');
@@ -70,6 +77,7 @@ export class GameScene extends Phaser.Scene {
       this.collisionState = null;           // Uint8Array of 0/1
       this.collisionZones = new Map();      // tile index -> Zone
       this._collisionGroup = this.physics.add.staticGroup();
+      this._lockCollisionGroup = this.physics.add.staticGroup(); // locked private zones
       return;
     }
 
@@ -127,6 +135,7 @@ export class GameScene extends Phaser.Scene {
 
     this.zones = m.zones || [];
     this._rebuildZoneIndex();
+    this._rebuildLockCollisions();
 
     this.mapEditor?.onMapReloaded();
   }
@@ -173,7 +182,33 @@ export class GameScene extends Phaser.Scene {
     this._currentZoneId = localZone;
     const zone = localZone != null ? this._zoneById?.get(localZone) : null;
     this._drawZoneDim(zone);
-    this.webRTC?.setZoneLabel(zone ? zone.name : null);
+    this.webRTC?.setZoneLabel(zone ? zone.name : null, zone ? !!zone.locked : false);
+    this._rebuildLockCollisions(localZone); // entering/leaving a locked zone changes passability
+  }
+
+  onMapZoneLocked(id, locked) {
+    const z = this._zoneById?.get(id);
+    if (z) z.locked = locked;
+    this._rebuildLockCollisions();
+    if (this._currentZoneId === id) this.webRTC?.setZoneLabel(z?.name, locked);
+    this.mapEditor?.onZonesReloaded();
+  }
+
+  // A locked zone is solid for everyone NOT currently inside it.
+  _rebuildLockCollisions(localZone = this._zoneAt(this.localPlayer?.sprite.x ?? 0, this.localPlayer?.sprite.y ?? 0)) {
+    if (!this._lockCollisionGroup) return;
+    this._lockCollisionGroup.clear(true, true);
+    const T = this._mapTile, W = this._mapTilesW;
+    if (!T) return;
+    (this.zones || []).forEach(z => {
+      if (!z.locked || z.id === localZone) return; // unlocked, or I'm inside → passable
+      z.cells.forEach(i => {
+        const col = i % W, row = Math.floor(i / W);
+        const zone = this.add.zone(col * T + T / 2, row * T + T / 2, T, T);
+        this.physics.add.existing(zone, true);
+        this._lockCollisionGroup.add(zone);
+      });
+    });
   }
 
   // Darken the whole map except the given zone's tiles (the zone stays lit).
@@ -200,13 +235,11 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // Objects layer by their z value. Normal objects sit in the band (1,2) —
-  // above the background (0), below players (3+). Objects flagged `above` sit
-  // in (5,6) — above players (so avatars pass behind them), below the HUD (10).
-  // atan keeps it monotonic in z and bounded for any z value.
-  _objDepth(z, above) {
-    const base = above ? 5.5 : 1.5;
-    return base + Math.atan((z || 0) / 500) / Math.PI;
+  // Depth from the object's avatar-relative layer + its foot (for y-sort within
+  // a layer) + z (a fine tiebreak for objects sharing a foot).
+  _objDepthFor(img, o) {
+    const foot = img.y + img.height; // origin is top-left
+    return LAYER_BASE + (o.layer || 0) + foot / FOOT_DIV + (o.z || 0) / 1e9;
   }
 
   _addMapObjectSprite(o) {
@@ -218,7 +251,7 @@ export class GameScene extends Phaser.Scene {
     const img = this.add.image(px, py, key).setOrigin(0, 0);
     img.setData('mapId', o.id);
     img.setData('obj', o);
-    img.setDepth(this._objDepth(o.z, o.above));
+    img.setDepth(this._objDepthFor(img, o));
     this.mapObjects.set(o.id, img);
     return img;
   }
@@ -228,15 +261,15 @@ export class GameScene extends Phaser.Scene {
     if (!img) return;
     const o = img.getData('obj');
     o.z = z;
-    img.setDepth(this._objDepth(z, o.above));
+    img.setDepth(this._objDepthFor(img, o));
   }
 
-  onMapObjectAbove(id, above) {
+  onMapObjectLayer(id, layer) {
     const img = this.mapObjects?.get(id);
     if (!img) return;
     const o = img.getData('obj');
-    o.above = above;
-    img.setDepth(this._objDepth(o.z, above));
+    o.layer = layer;
+    img.setDepth(this._objDepthFor(img, o));
     if (this.mapEditor?.selectedId === id) this.mapEditor._syncTools();
   }
 
@@ -250,9 +283,9 @@ export class GameScene extends Phaser.Scene {
     if (!img) return;
     const T = this._mapTile;
     img.setPosition(x * T + (ox || 0), y * T + (oy || 0));
-    // depth stays driven by z (layer), independent of position
     const o = img.getData('obj');
     Object.assign(o, { x, y, ox: ox || 0, oy: oy || 0 });
+    img.setDepth(this._objDepthFor(img, o)); // foot changed → re-sort
   }
 
   onMapObjectRemoved(id) {
@@ -366,9 +399,12 @@ export class GameScene extends Phaser.Scene {
     this.localPlayer = new LocalPlayer(
       this, this.mapW / 2, this.mapH / 2, this.avatarIndex, this.playerName
     );
-    // Solid tiles from the imported map block the local avatar
+    // Solid tiles from the imported map (and locked private zones) block the avatar
     if (this._collisionGroup) {
       this.physics.add.collider(this.localPlayer.sprite, this._collisionGroup);
+    }
+    if (this._lockCollisionGroup) {
+      this.physics.add.collider(this.localPlayer.sprite, this._lockCollisionGroup);
     }
   }
 
@@ -416,6 +452,11 @@ export class GameScene extends Phaser.Scene {
     this.webRTC = new WebRTCManager(this.socket, this.playerName, {
       email: this.email, picture: this.picture,
     });
+    // Lock/unlock the private zone the local player is currently inside
+    this.webRTC.onToggleZoneLock = () => {
+      const z = this._currentZoneId != null ? this._zoneById?.get(this._currentZoneId) : null;
+      if (z) this.socket?.sendZoneLock(z.id, !z.locked);
+    };
   }
 
   // ── camera ────────────────────────────────────────────────────────────────
@@ -614,15 +655,15 @@ export class GameScene extends Phaser.Scene {
 
     this._checkProximity(localZone);
 
-    // Y-sort depth so players behind furniture appear behind it
-    const localDepth = 3 + this.localPlayer.sprite.y / 10000;
-    this.localPlayer.sprite.setDepth(localDepth);
-    this.localPlayer.nameTag.setDepth(localDepth + 0.1);
+    // Y-sort avatars within the avatar layer (foot = sprite bottom). Objects on
+    // layer 0 share this band and interleave naturally; other layers are above/below.
+    const ls = this.localPlayer.sprite;
+    ls.setDepth(LAYER_BASE + (ls.y + ls.height / 2) / FOOT_DIV);
+    this.localPlayer.nameTag.setDepth(NAME_DEPTH);
 
     this.remotePlayers.forEach(rp => {
-      const d = 3 + rp.sprite.y / 10000;
-      rp.sprite.setDepth(d);
-      rp.nameTag.setDepth(d + 0.1);
+      rp.sprite.setDepth(LAYER_BASE + (rp.sprite.y + rp.sprite.height / 2) / FOOT_DIV);
+      rp.nameTag.setDepth(NAME_DEPTH);
     });
   }
 

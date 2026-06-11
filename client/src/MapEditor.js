@@ -79,7 +79,11 @@ export class MapEditor {
       this._btn('↓ Back',  () => this._changeZ('backward')),
       this._btn('⤓ Bottom', () => this._changeZ('back')),
     ];
-    this._aboveBtn = this._btn('Above avatars', () => this._toggleAbove());
+    // Avatar-relative layer controls (0 = same layer as avatars / y-sorted)
+    this._layerDownBtn = this._btn('▽ layer', () => this._changeLayer(-1));
+    this._layerLabel = mk('span', 'font-family:monospace;font-size:12px;color:#94a3b8;min-width:78px;text-align:center;');
+    this._layerLabel.textContent = 'vs avatar: –';
+    this._layerUpBtn = this._btn('△ layer', () => this._changeLayer(1));
 
     // Collision tools
     this._paintBtn = this._btn('🟥 Paint', () => { this.erase = false; this._syncTools(); });
@@ -113,7 +117,7 @@ export class MapEditor {
     exit.style.marginLeft = 'auto';
 
     this._bar.append(title, this._tabObjects, this._tabColl, this._tabZones,
-      this._delBtn, ...this._zBtns, this._aboveBtn,
+      this._delBtn, ...this._zBtns, this._layerDownBtn, this._layerLabel, this._layerUpBtn,
       this._paintBtn, this._eraseBtn,
       this._zoneNameInput, this._zoneSaveBtn, this._zoneClearBtn, this._zoneSelect, this._zoneDelBtn,
       this._hint, exit);
@@ -235,11 +239,15 @@ export class MapEditor {
       b.style.opacity = this.selectedId ? '1' : '0.5';
     });
     const sel = this.selectedId ? this.scene.mapObjects.get(this.selectedId)?.getData('obj') : null;
-    this._aboveBtn.style.display = obj ? '' : 'none';
-    this._aboveBtn.disabled = !sel;
-    this._aboveBtn.style.opacity = sel ? '1' : '0.5';
-    this._aboveBtn.style.background = sel?.above ? '#14532d' : '#1e293b';
-    this._aboveBtn.textContent = sel?.above ? '👤 Above avatars ✓' : '👤 Above avatars';
+    [this._layerDownBtn, this._layerUpBtn].forEach(b => {
+      b.style.display = obj ? '' : 'none';
+      b.disabled = !sel;
+      b.style.opacity = sel ? '1' : '0.5';
+    });
+    this._layerLabel.style.display = obj ? '' : 'none';
+    const ly = sel ? (sel.layer || 0) : null;
+    this._layerLabel.textContent = ly === null ? 'vs avatar: –'
+      : (ly === 0 ? 'same as avatar' : `${ly > 0 ? '+' : ''}${ly} vs avatar`);
 
     // Collision tools
     this._paintBtn.style.display = coll ? '' : 'none';
@@ -312,11 +320,12 @@ export class MapEditor {
     this.scene.socket?.sendMapZ(this.selectedId, nz);
   }
 
-  _toggleAbove() {
+  _changeLayer(delta) {
     if (!this.selectedId) return;
     const o = this.scene.mapObjects.get(this.selectedId)?.getData('obj');
     if (!o) return;
-    this.scene.socket?.sendMapAbove(this.selectedId, !o.above);
+    const next = Math.max(-4, Math.min(4, (o.layer || 0) + delta));
+    if (next !== (o.layer || 0)) this.scene.socket?.sendMapLayer(this.selectedId, next);
   }
 
   // ── pointer interactions ─────────────────────────────────────────────────────

@@ -95,11 +95,12 @@ export class SocketManager {
     this.socket.on('map-object-added',   (o)   => this.scene.onMapObjectAdded?.(o));
     this.socket.on('map-object-moved',   (o)   => this.scene.onMapObjectMoved?.(o));
     this.socket.on('map-object-z',       ({ id, z }) => this.scene.onMapObjectZ?.(id, z));
-    this.socket.on('map-object-above',   ({ id, above }) => this.scene.onMapObjectAbove?.(id, above));
+    this.socket.on('map-object-layer',   ({ id, layer }) => this.scene.onMapObjectLayer?.(id, layer));
     this.socket.on('map-object-removed', ({ id }) => this.scene.onMapObjectRemoved?.(id));
     this.socket.on('map-collision',      ({ cells }) => this.scene.onMapCollision?.(cells));
     this.socket.on('map-zone-added',     (z) => this.scene.onMapZoneAdded?.(z));
     this.socket.on('map-zone-removed',   ({ id }) => this.scene.onMapZoneRemoved?.(id));
+    this.socket.on('map-zone-locked',    ({ id, locked }) => this.scene.onMapZoneLocked?.(id, locked));
 
     // Presence + direct messages
     this.socket.on('presence',   (list) => this.scene.webRTC?.onPresence(list));
@@ -142,12 +143,13 @@ export class SocketManager {
   // Map editing
   sendMapAdd(obj)       { this.socket?.emit('map-add-object', obj); }
   sendMapMove(obj)      { this.socket?.emit('map-move-object', obj); }
-  sendMapZ(id, z)       { this.socket?.emit('map-object-z', { id, z }); }
-  sendMapAbove(id, above) { this.socket?.emit('map-object-above', { id, above }); }
-  sendMapDelete(id)     { this.socket?.emit('map-delete-object', { id }); }
+  sendMapZ(id, z)        { this.socket?.emit('map-object-z', { id, z }); }
+  sendMapLayer(id, layer) { this.socket?.emit('map-object-layer', { id, layer }); }
+  sendMapDelete(id)      { this.socket?.emit('map-delete-object', { id }); }
   sendMapCollision(cells) { this.socket?.emit('map-collision', { cells }); }
   sendZoneAdd(name, cells) { this.socket?.emit('map-zone-add', { name, cells }); }
   sendZoneDelete(id)       { this.socket?.emit('map-zone-delete', { id }); }
+  sendZoneLock(id, locked) { this.socket?.emit('map-zone-lock', { id, locked }); }
   sendDM(to, text)         { this.socket?.emit('dm-send', { to, text }); }
   requestDMHistory(peer)   { this.socket?.emit('dm-history', { peer }); }
 

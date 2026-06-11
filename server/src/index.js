@@ -91,7 +91,10 @@ function normalizeMap(m) {
   if (typeof col === 'string') col = Array.from(Buffer.from(col, 'base64'));
   const placements = (m.placements || []).map((p, i) => ({
     id: p.id || `o${i}`, f: p.f, x: p.x, y: p.y, ox: p.ox || 0, oy: p.oy || 0,
-    z: p.z || 0, above: !!p.above,
+    z: p.z || 0,
+    // Avatar-relative layer: 0 y-sorts with avatars, <0 below, >0 above.
+    // Migrate the old boolean `above` (true -> +1, false -> -1).
+    layer: Number.isInteger(p.layer) ? p.layer : (p.above ? 1 : -1),
   }));
   let maxId = 0;
   placements.forEach(p => { const n = parseInt(String(p.id).replace(/\D/g, ''), 10); if (n > maxId) maxId = n; });
@@ -99,6 +102,7 @@ function normalizeMap(m) {
   const zones = (m.zones || []).map((z, i) => ({
     id: z.id ?? i + 1, name: String(z.name || `Zone ${i + 1}`).slice(0, 40),
     cells: Array.isArray(z.cells) ? z.cells.filter(Number.isInteger) : [],
+    locked: !!z.locked,
   }));
   const nextZoneId = zones.reduce((mx, z) => Math.max(mx, z.id), 0) + 1;
   return { dims: m.dims, tile: m.tile, collisions: col, placements, zones, nextId: maxId + 1, nextZoneId };
@@ -256,9 +260,9 @@ io.on('connection', (socket) => {
   });
 
   // ── map editing (shared across everyone; broadcast to all incl. sender) ──
-  socket.on('map-add-object', ({ f, x, y, ox, oy, z, above }) => {
+  socket.on('map-add-object', ({ f, x, y, ox, oy, z, layer }) => {
     if (typeof f !== 'string') return;
-    const obj = { id: `o${mapState.nextId++}`, f, x: x | 0, y: y | 0, ox: ox || 0, oy: oy || 0, z: z || 0, above: !!above };
+    const obj = { id: `o${mapState.nextId++}`, f, x: x | 0, y: y | 0, ox: ox || 0, oy: oy || 0, z: z || 0, layer: Number.isInteger(layer) ? layer : 0 };
     mapState.placements.push(obj);
     io.emit('map-object-added', obj);
     scheduleSave();
@@ -282,11 +286,11 @@ io.on('connection', (socket) => {
     scheduleSave();
   });
 
-  socket.on('map-object-above', ({ id, above }) => {
+  socket.on('map-object-layer', ({ id, layer }) => {
     const obj = mapState.placements.find(p => p.id === id);
-    if (!obj) return;
-    obj.above = !!above;
-    io.emit('map-object-above', { id, above: obj.above });
+    if (!obj || !Number.isInteger(layer)) return;
+    obj.layer = Math.max(-4, Math.min(4, layer));
+    io.emit('map-object-layer', { id, layer: obj.layer });
     scheduleSave();
   });
 
@@ -315,6 +319,14 @@ io.on('connection', (socket) => {
     if (i === -1) return;
     mapState.zones.splice(i, 1);
     io.emit('map-zone-removed', { id });
+    scheduleSave();
+  });
+
+  socket.on('map-zone-lock', ({ id, locked }) => {
+    const z = mapState.zones.find(z => z.id === id);
+    if (!z) return;
+    z.locked = !!locked;
+    io.emit('map-zone-locked', { id, locked: z.locked });
     scheduleSave();
   });
 

@@ -38,7 +38,8 @@ export class WebRTCManager {
     this.socket     = socketManager;
     this.localName  = localName;
     this.localProfile = { name: localName, email: profile.email || null, picture: profile.picture || null };
-    this.onEditMap = null; // set by the scene to toggle the map editor
+    this.onEditMap = null;       // set by the scene to toggle the map editor
+    this.onToggleZoneLock = null; // set by the scene to lock/unlock the current zone
     // Presence + direct messages
     this._presence = [];                  // [{ email, name, picture, online }]
     this._dmThreads = new Map();          // peerEmail -> [{ from, text, ts }]
@@ -1059,8 +1060,23 @@ export class WebRTCManager {
       padding:11px 14px; background:#0f172a; border-bottom:1px solid #334155;
       display:flex; align-items:center; gap:8px; flex-shrink:0;
     `);
-    this._chatTitle = mk('span', 'font-family:monospace;font-size:13px;color:#94a3b8;font-weight:bold;flex:1;');
+    this._chatTitle = mk('span', `
+      font-family:monospace;font-size:13px;color:#94a3b8;font-weight:bold;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    `);
     this._chatTitle.textContent = '👥 Online';
+    // Padlock next to the zone name (shown only inside a private zone)
+    this._zoneLockBtn = mk('button', `
+      background:none;border:none;cursor:pointer;padding:0;line-height:0;
+      display:none;align-items:center;color:#94a3b8;flex-shrink:0;
+    `);
+    this._zoneLockIcon = mk('span', 'font-size:18px;');
+    this._zoneLockIcon.className = 'material-symbols-outlined';
+    this._zoneLockIcon.textContent = 'lock_open';
+    this._zoneLockBtn.appendChild(this._zoneLockIcon);
+    this._zoneLockBtn.addEventListener('click', () => this.onToggleZoneLock?.());
+    const titleWrap = mk('div', 'flex:1; min-width:0; display:flex; align-items:center; gap:6px;');
+    titleWrap.append(this._chatTitle, this._zoneLockBtn);
     this._unreadBadge = mk('span', `
       background:#ef4444; color:#fff; font-size:10px;
       border-radius:10px; padding:1px 6px; display:none; font-family:monospace;
@@ -1080,7 +1096,7 @@ export class WebRTCManager {
     this._chatMinBtn.textContent = '+';
     this._chatMinBtn.title = 'Expand';
     this._chatMinBtn.addEventListener('click', () => this._toggleChatMinimize());
-    hdr.append(this._chatTitle, this._unreadBadge, this._dmBadge, this._chatMinBtn);
+    hdr.append(titleWrap, this._unreadBadge, this._dmBadge, this._chatMinBtn);
 
     // Body holds the two views; minimizing hides the body, leaving the header.
     this._chatBody = mk('div', 'flex:1; min-height:0; display:flex; flex-direction:column;');
@@ -1962,10 +1978,16 @@ export class WebRTCManager {
     return this.peers.get(peerId)?.userGain ?? 1;
   }
 
-  // Entering/leaving a private zone retitles the panel and switches it to the
-  // contextual area chat (vs the online/DM view).
-  setZoneLabel(name) {
+  // Entering/leaving a private zone retitles the panel, switches it to the
+  // contextual area chat, and shows the (un)lock padlock for that zone.
+  setZoneLabel(name, locked = false) {
     this._zoneName = name || null;
+    if (this._zoneLockBtn) {
+      this._zoneLockBtn.style.display = name ? 'inline-flex' : 'none';
+      this._zoneLockIcon.textContent = locked ? 'lock' : 'lock_open';
+      this._zoneLockIcon.style.color = locked ? '#fca5a5' : '#94a3b8';
+      this._zoneLockBtn.title = locked ? 'Unlock area' : 'Lock area';
+    }
     this._updatePanelMode();
   }
 

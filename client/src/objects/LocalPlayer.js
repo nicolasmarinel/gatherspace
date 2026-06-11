@@ -31,7 +31,7 @@ export class LocalPlayer {
 
     this._youTag = scene.add.text(x, y - 52, '(you)', {
       fontSize: '10px', color: '#60a5fa', fontFamily: 'monospace'
-    }).setOrigin(0.5).setDepth(4.1);
+    }).setOrigin(0.5).setDepth(8.6); // above object layers, below the zone dimmer
   }
 
   // Toggle dance mode (key press). Movement will clear it on the next update.
