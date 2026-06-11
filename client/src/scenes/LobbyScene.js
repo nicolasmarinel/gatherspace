@@ -233,6 +233,8 @@ export class LobbyScene extends Phaser.Scene {
       name, avatarIndex: this.selectedAvatar, roomId,
       identity: this.profile?.sub || null,
       idToken: this.idToken || null,
+      email: this.profile?.email || null,
+      picture: this.profile?.picture || null,
     });
   }
 

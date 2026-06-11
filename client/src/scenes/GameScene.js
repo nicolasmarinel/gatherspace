@@ -18,6 +18,8 @@ export class GameScene extends Phaser.Scene {
     this.roomId = data.roomId;
     this.identity = data.identity || null; // stable per-account id (Google sub)
     this.idToken = data.idToken || null;   // verified server-side on join
+    this.email = data.email || null;
+    this.picture = data.picture || null;
   }
 
   create() {
@@ -162,8 +164,32 @@ export class GameScene extends Phaser.Scene {
     if (localZone === this._currentZoneId) return;
     this._currentZoneId = localZone;
     const zone = localZone != null ? this._zoneById?.get(localZone) : null;
-    this._darken?.setVisible(!!zone);
+    this._drawZoneDim(zone);
     this.webRTC?.setZoneLabel(zone ? zone.name : null);
+  }
+
+  // Darken the whole map except the given zone's tiles (the zone stays lit).
+  // Uses per-row spans so it's a handful of rects, redrawn only on zone change.
+  _drawZoneDim(zone) {
+    const g = this._darkGfx;
+    if (!g) return;
+    g.clear();
+    if (!zone) return;
+    const T = this._mapTile, W = this._mapTilesW, H = this._mapTilesH;
+    const inZone = new Set(zone.cells);
+    g.fillStyle(0x00010a, 0.5);
+    for (let row = 0; row < H; row++) {
+      let start = -1;
+      for (let col = 0; col <= W; col++) {
+        const dark = col < W && !inZone.has(row * W + col);
+        if (dark) {
+          if (start === -1) start = col;
+        } else if (start !== -1) {
+          g.fillRect(start * T, row * T, (col - start) * T, T);
+          start = -1;
+        }
+      }
+    }
   }
 
   // Objects layer by their z value. Normal objects sit in the band (1,2) —
@@ -375,7 +401,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   _setupWebRTC() {
-    this.webRTC = new WebRTCManager(this.socket, this.playerName);
+    this.webRTC = new WebRTCManager(this.socket, this.playerName, {
+      email: this.email, picture: this.picture,
+    });
   }
 
   // ── camera ────────────────────────────────────────────────────────────────
@@ -434,11 +462,9 @@ export class GameScene extends Phaser.Scene {
   // ── HUD ───────────────────────────────────────────────────────────────────
 
   _setupHUD() {
-    // Full-screen dimmer shown while the local player is inside a private zone.
-    // Sits above the world/avatars (depth 9) but below the HUD text (depth 10);
-    // DOM overlays (video, chat, controls) render above the canvas regardless.
-    this._darken = this.add.rectangle(0, 0, 8000, 8000, 0x00010a, 0.4)
-      .setOrigin(0).setScrollFactor(0).setDepth(9).setVisible(false);
+    // World-space dimmer: when inside a private zone, everything EXCEPT the
+    // zone's own tiles is darkened (depth 9 — above world/avatars, below HUD).
+    this._darkGfx = this.add.graphics().setDepth(9);
 
     const style = (s) => ({
       fontSize: s, color: '#e2e8f0', fontFamily: 'monospace',

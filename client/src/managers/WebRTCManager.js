@@ -34,9 +34,15 @@ const TILE_W = 256;
 const TILE_H = 192;
 
 export class WebRTCManager {
-  constructor(socketManager, localName = 'You') {
+  constructor(socketManager, localName = 'You', profile = {}) {
     this.socket     = socketManager;
     this.localName  = localName;
+    this.localProfile = { name: localName, email: profile.email || null, picture: profile.picture || null };
+    // Presence + direct messages
+    this._presence = [];                  // [{ email, name, picture, online }]
+    this._dmThreads = new Map();          // peerEmail -> [{ from, text, ts }]
+    this._dmUnread = new Map();           // peerEmail -> count
+    this._activeDM = null;                // peerEmail of the open thread
     this.peers       = new Map();  // peerId -> { pc, stream, audioEl, filmTile, dc }
     this.screenPeers = new Map();  // peerId -> { pc, stream, filmTile }
     this.peerNames   = new Map();  // peerId -> string
@@ -1022,11 +1028,12 @@ export class WebRTCManager {
   // ── chat panel ────────────────────────────────────────────────────────────
 
   _buildChatPanel() {
-    // Docked full-height panel on the right edge of the screen
+    // Docked full-height panel on the right edge. Always present; it shows the
+    // nearby chat when someone is in proximity, otherwise the online/DM view.
     this._chat = mk('div', `
       position:fixed; top:0; right:0; bottom:0; width:300px; z-index:100;
       background:#1e293b; border-left:1px solid #334155;
-      display:none; flex-direction:column; overflow:hidden;
+      display:flex; flex-direction:column; overflow:hidden;
       box-shadow:-4px 0 24px #00000066;
     `);
 
@@ -1035,132 +1042,182 @@ export class WebRTCManager {
       padding:11px 14px; background:#0f172a; border-bottom:1px solid #334155;
       display:flex; align-items:center; gap:8px; flex-shrink:0;
     `);
-    const hdrTitle = mk('span', 'font-family:monospace;font-size:13px;color:#94a3b8;font-weight:bold;flex:1;');
-    hdrTitle.textContent = '💬 Nearby Chat';
-    this._chatTitle = hdrTitle;
+    this._chatTitle = mk('span', 'font-family:monospace;font-size:13px;color:#94a3b8;font-weight:bold;flex:1;');
+    this._chatTitle.textContent = '👥 Online';
     this._unreadBadge = mk('span', `
       background:#ef4444; color:#fff; font-size:10px;
       border-radius:10px; padding:1px 6px; display:none; font-family:monospace;
     `);
     this._unreadCount = 0;
-
-    // Minimize / restore toggle — collapses the panel to just this header bar.
-    // Starts minimized so it stays out of the way when entering a room.
     this._chatMinimized = true;
     this._chatMinBtn = mk('button', `
       background:#334155; border:none; color:#e2e8f0; font-size:16px;
-      width:26px; height:26px; border-radius:6px; cursor:pointer; line-height:1;
-      flex-shrink:0;
+      width:26px; height:26px; border-radius:6px; cursor:pointer; line-height:1; flex-shrink:0;
     `);
     this._chatMinBtn.textContent = '+';
-    this._chatMinBtn.title = 'Expand chat';
+    this._chatMinBtn.title = 'Expand';
     this._chatMinBtn.addEventListener('click', () => this._toggleChatMinimize());
+    hdr.append(this._chatTitle, this._unreadBadge, this._chatMinBtn);
 
-    hdr.append(hdrTitle, this._unreadBadge, this._chatMinBtn);
+    // Body holds the two views; minimizing hides the body, leaving the header.
+    this._chatBody = mk('div', 'flex:1; min-height:0; display:flex; flex-direction:column;');
+    this._nearbyView = this._buildNearbyView();
+    this._onlineView = this._buildOnlineView();
+    this._chatBody.append(this._nearbyView, this._onlineView);
 
-    // Message list — grows to fill the panel
+    this._chat.append(hdr, this._chatBody);
+    document.body.appendChild(this._chat);
+
+    // Start minimized + in online mode
+    this._chatBody.style.display = 'none';
+    this._chat.style.bottom = 'auto';
+    this._updatePanelMode();
+  }
+
+  // ── nearby (proximity) chat view ────────────────────────────────────────────
+
+  _buildNearbyView() {
+    const view = mk('div', 'flex:1; min-height:0; display:flex; flex-direction:column;');
     this._chatMessages = mk('div', `
-      flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column;
-      gap:5px;
+      flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:5px;
       scrollbar-width:thin; scrollbar-color:#334155 transparent;
     `);
-
-    // Input row
-    const inputRow = mk('div', `
-      display:flex; gap:6px; padding:8px; border-top:1px solid #334155; flex-shrink:0;
-    `);
+    const inputRow = mk('div', 'display:flex; gap:6px; padding:8px; border-top:1px solid #334155; flex-shrink:0;');
     this._chatInput = document.createElement('input');
     this._chatInput.type = 'text';
     this._chatInput.placeholder = 'Say something…';
     this._chatInput.maxLength = 300;
     this._chatInput.style.cssText = `
       flex:1; background:#0f172a; color:#e2e8f0; border:1px solid #334155;
-      border-radius:6px; padding:6px 8px; font-family:monospace; font-size:12px; outline:none;
-    `;
+      border-radius:6px; padding:6px 8px; font-family:monospace; font-size:12px; outline:none;`;
     this._chatInput.addEventListener('focus', () => {
       this._chatInput.style.borderColor = '#3b82f6';
-      this._unreadCount = 0;
-      this._unreadBadge.style.display = 'none';
+      this._unreadCount = 0; this._unreadBadge.style.display = 'none';
     });
     this._chatInput.addEventListener('blur', () => this._chatInput.style.borderColor = '#334155');
     this._chatInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        this._sendMessage(this._chatInput.value);
-        this._chatInput.value = '';
-      } else if (e.key === 'Escape') {
-        // Release focus so arrow-key movement resumes
-        this._chatInput.blur();
-      }
-      // Don't let keystrokes reach Phaser's keyboard handler while typing
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._sendMessage(this._chatInput.value); this._chatInput.value = ''; }
+      else if (e.key === 'Escape') this._chatInput.blur();
       e.stopPropagation();
     });
-
-    const sendBtn = mk('button', `
-      background:#2563eb; border:none; color:#fff; border-radius:6px;
-      padding:6px 10px; font-family:monospace; font-size:12px; cursor:pointer;
-    `);
-    sendBtn.textContent = 'Send';
-    sendBtn.addEventListener('mouseenter', () => sendBtn.style.background = '#1d4ed8');
-    sendBtn.addEventListener('mouseleave', () => sendBtn.style.background = '#2563eb');
-    sendBtn.addEventListener('click', () => {
-      this._sendMessage(this._chatInput.value);
-      this._chatInput.value = '';
-      this._chatInput.focus();
-    });
-
+    const sendBtn = this._sendButton(() => { this._sendMessage(this._chatInput.value); this._chatInput.value = ''; this._chatInput.focus(); });
     inputRow.append(this._chatInput, sendBtn);
-    this._chatInputRow = inputRow;
-    this._chat.append(hdr, this._chatMessages, inputRow);
-    document.body.appendChild(this._chat);
-
-    // Apply the initial minimized state (collapsed to the header bar)
-    this._chatMessages.style.display = 'none';
-    this._chatInputRow.style.display = 'none';
-    this._chat.style.bottom = 'auto';
+    view.append(this._chatMessages, inputRow);
+    return view;
   }
 
-  // Collapse the chat to just its header bar (frees the screen, esp. on mobile)
+  _sendButton(onClick) {
+    const b = mk('button', `
+      background:#2563eb; border:none; color:#fff; border-radius:6px;
+      padding:6px 10px; font-family:monospace; font-size:12px; cursor:pointer;`);
+    b.textContent = 'Send';
+    b.addEventListener('mouseenter', () => b.style.background = '#1d4ed8');
+    b.addEventListener('mouseleave', () => b.style.background = '#2563eb');
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  // ── online users + direct-message view ──────────────────────────────────────
+
+  _buildOnlineView() {
+    const view = mk('div', 'flex:1; min-height:0; display:flex; flex-direction:column;');
+
+    // Profile header (you)
+    const prof = mk('div', `
+      display:flex; align-items:center; gap:10px; padding:12px 14px;
+      border-bottom:1px solid #334155; flex-shrink:0;
+    `);
+    const pic = document.createElement('img');
+    pic.referrerPolicy = 'no-referrer';
+    if (this.localProfile.picture) pic.src = this.localProfile.picture;
+    pic.style.cssText = 'width:38px;height:38px;border-radius:50%;background:#334155;flex-shrink:0;';
+    const who = mk('div', 'font-family:monospace; min-width:0;');
+    const nm = mk('div', 'font-size:13px;color:#e2e8f0;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
+    nm.textContent = this.localProfile.name;
+    const em = mk('div', 'font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
+    em.textContent = this.localProfile.email || 'guest';
+    who.append(nm, em);
+    prof.append(pic, who);
+
+    // Direct messages section: list <-> thread
+    this._dmListEl = mk('div', `
+      flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
+      scrollbar-width:thin; scrollbar-color:#334155 transparent;
+    `);
+    this._dmThreadEl = mk('div', 'flex:1; min-height:0; display:none; flex-direction:column;');
+
+    // Thread header (back + name)
+    const thHdr = mk('div', 'display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid #334155; flex-shrink:0;');
+    const back = mk('button', 'background:#334155;border:none;color:#e2e8f0;border-radius:6px;width:26px;height:26px;cursor:pointer;font-family:monospace;');
+    back.textContent = '‹';
+    back.title = 'Back to people';
+    back.addEventListener('click', () => this._closeDM());
+    this._dmThreadName = mk('span', 'font-family:monospace;font-size:13px;color:#e2e8f0;font-weight:bold;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
+    thHdr.append(back, this._dmThreadName);
+
+    this._dmThreadMsgs = mk('div', `
+      flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:5px;
+      scrollbar-width:thin; scrollbar-color:#334155 transparent;
+    `);
+    const thInputRow = mk('div', 'display:flex; gap:6px; padding:8px; border-top:1px solid #334155; flex-shrink:0;');
+    this._dmInput = document.createElement('input');
+    this._dmInput.type = 'text';
+    this._dmInput.placeholder = 'Message…';
+    this._dmInput.maxLength = 2000;
+    this._dmInput.style.cssText = `
+      flex:1; background:#0f172a; color:#e2e8f0; border:1px solid #334155;
+      border-radius:6px; padding:6px 8px; font-family:monospace; font-size:12px; outline:none;`;
+    this._dmInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._sendDM(); }
+      else if (e.key === 'Escape') this._dmInput.blur();
+      e.stopPropagation();
+    });
+    const dmSend = this._sendButton(() => this._sendDM());
+    thInputRow.append(this._dmInput, dmSend);
+    this._dmThreadEl.append(thHdr, this._dmThreadMsgs, thInputRow);
+
+    view.append(prof, this._dmListEl, this._dmThreadEl);
+    return view;
+  }
+
+  // ── panel mode + minimize ───────────────────────────────────────────────────
+
+  _hasNearby() {
+    return Array.from(this.peers.values()).some(p => p.dc?.readyState === 'open');
+  }
+
+  _updatePanelMode() {
+    const nearby = this._hasNearby();
+    if (this._nearbyView) this._nearbyView.style.display = nearby ? 'flex' : 'none';
+    if (this._onlineView) this._onlineView.style.display = nearby ? 'none' : 'flex';
+    this._updateHeaderTitle(nearby);
+  }
+
+  _updateHeaderTitle(nearby = this._hasNearby()) {
+    if (!this._chatTitle) return;
+    this._chatTitle.textContent = this._zoneName
+      ? `🔒 ${this._zoneName}`
+      : (nearby ? '💬 Nearby Chat' : '👥 Online');
+  }
+
   _toggleChatMinimize() {
     this._chatMinimized = !this._chatMinimized;
     const hide = this._chatMinimized;
-    this._chatMessages.style.display = hide ? 'none' : 'flex';
-    this._chatInputRow.style.display = hide ? 'none' : 'flex';
-    // bottom:auto lets the panel shrink to header height when collapsed
+    this._chatBody.style.display = hide ? 'none' : 'flex';
     this._chat.style.bottom = hide ? 'auto' : '0';
     this._chatMinBtn.textContent = hide ? '+' : '–';
-    this._chatMinBtn.title = hide ? 'Expand chat' : 'Minimize chat';
+    this._chatMinBtn.title = hide ? 'Expand' : 'Minimize';
   }
 
-  _showChat() {
-    this._chat.style.display = 'flex';
-  }
+  // Switch to the nearby view when a data channel opens (panel stays at its
+  // current minimized/expanded state; new messages surface via the badge).
+  _showChat() { this._updatePanelMode(); }
 
-  _hideChat() {
-    const anyOpen = Array.from(this.peers.values()).some(p => p.dc?.readyState === 'open');
-    if (!anyOpen) this._chat.style.display = 'none';
-  }
+  _hideChat() { this._updatePanelMode(); } // fall back to online view; panel stays visible
 
   _appendMessage(name, text, isSelf) {
-    const row = mk('div', `
-      display:flex; flex-direction:column; gap:2px;
-      align-items:${isSelf ? 'flex-end' : 'flex-start'};
-    `);
-    const nameEl = mk('div', 'font-family:monospace;font-size:10px;color:#64748b;padding:0 4px;');
-    nameEl.textContent = name;
-    const bubble = mk('div', `
-      background:${isSelf ? '#1d4ed8' : '#334155'};
-      color:#e2e8f0; font-family:monospace; font-size:12px; line-height:1.4;
-      padding:5px 10px;
-      border-radius:${isSelf ? '10px 10px 2px 10px' : '10px 10px 10px 2px'};
-      max-width:220px; word-break:break-word; white-space:pre-wrap;
-    `);
-    bubble.textContent = text;
-    row.append(nameEl, bubble);
-    this._chatMessages.appendChild(row);
+    this._chatMessages.appendChild(this._bubble(name, text, isSelf));
     this._chatMessages.scrollTop = this._chatMessages.scrollHeight;
-
-    // Show unread badge when chat input is not focused
     if (document.activeElement !== this._chatInput) {
       this._unreadCount++;
       this._unreadBadge.textContent = this._unreadCount;
@@ -1168,16 +1225,135 @@ export class WebRTCManager {
     }
   }
 
+  _bubble(name, text, isSelf) {
+    const row = mk('div', `display:flex; flex-direction:column; gap:2px; align-items:${isSelf ? 'flex-end' : 'flex-start'};`);
+    const nameEl = mk('div', 'font-family:monospace;font-size:10px;color:#64748b;padding:0 4px;');
+    nameEl.textContent = name;
+    const bubble = mk('div', `
+      background:${isSelf ? '#1d4ed8' : '#334155'};
+      color:#e2e8f0; font-family:monospace; font-size:12px; line-height:1.4; padding:5px 10px;
+      border-radius:${isSelf ? '10px 10px 2px 10px' : '10px 10px 10px 2px'};
+      max-width:220px; word-break:break-word; white-space:pre-wrap;`);
+    bubble.textContent = text;
+    row.append(nameEl, bubble);
+    return row;
+  }
+
   _sendMessage(text) {
     text = text.trim();
     if (!text) return;
     const payload = JSON.stringify({ t: 'chat', name: this.localName, text });
-    this.peers.forEach(peer => {
-      if (peer.dc?.readyState === 'open') peer.dc.send(payload);
-    });
+    this.peers.forEach(peer => { if (peer.dc?.readyState === 'open') peer.dc.send(payload); });
     this._appendMessage(this.localName, text, true);
     this._unreadCount = 0;
     this._unreadBadge.style.display = 'none';
+  }
+
+  // ── presence + DM logic ─────────────────────────────────────────────────────
+
+  onPresence(list) {
+    this._presence = (list || []).filter(u => u.email !== this.localProfile.email);
+    this._renderDMList();
+    this._updatePanelMode();
+  }
+
+  _renderDMList() {
+    const el = this._dmListEl;
+    if (!el) return;
+    el.innerHTML = '';
+    if (!this._presence.length) {
+      const empty = mk('div', 'padding:16px;font-family:monospace;font-size:12px;color:#64748b;text-align:center;');
+      empty.textContent = 'No other users yet.';
+      el.appendChild(empty);
+      return;
+    }
+    // online first, then alphabetical
+    const sorted = [...this._presence].sort((a, b) =>
+      (b.online - a.online) || a.name.localeCompare(b.name));
+    sorted.forEach(u => {
+      const row = mk('button', `
+        display:flex; align-items:center; gap:10px; padding:10px 14px; width:100%;
+        background:none; border:none; border-bottom:1px solid #1e293b; cursor:pointer;
+        text-align:left; font-family:monospace;
+      `);
+      row.addEventListener('mouseenter', () => row.style.background = '#0f172a');
+      row.addEventListener('mouseleave', () => row.style.background = 'none');
+      const dot = mk('span', `width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${u.online ? '#22c55e' : '#475569'};`);
+      const pic = document.createElement('img');
+      pic.referrerPolicy = 'no-referrer';
+      if (u.picture) pic.src = u.picture;
+      pic.style.cssText = 'width:28px;height:28px;border-radius:50%;background:#334155;flex-shrink:0;';
+      const name = mk('div', 'flex:1;font-size:12px;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;');
+      name.textContent = u.name;
+      const unread = this._dmUnread.get(u.email) || 0;
+      const badge = mk('span', `
+        background:#ef4444;color:#fff;font-size:10px;border-radius:10px;padding:1px 6px;
+        display:${unread ? 'inline' : 'none'};`);
+      badge.textContent = unread;
+      row.append(dot, pic, name, badge);
+      row.addEventListener('click', () => this._openDM(u.email));
+      el.appendChild(row);
+    });
+  }
+
+  _openDM(email) {
+    this._activeDM = email;
+    this._dmUnread.set(email, 0);
+    const u = this._presence.find(p => p.email === email);
+    this._dmThreadName.textContent = u ? u.name : email;
+    this._dmListEl.style.display = 'none';
+    this._dmThreadEl.style.display = 'flex';
+    this._renderDMThread();
+    this.socket?.requestDMHistory(email); // pull persisted history
+    setTimeout(() => this._dmInput?.focus(), 30);
+  }
+
+  _closeDM() {
+    this._activeDM = null;
+    this._dmThreadEl.style.display = 'none';
+    this._dmListEl.style.display = 'flex';
+    this._renderDMList();
+  }
+
+  _renderDMThread() {
+    const el = this._dmThreadMsgs;
+    if (!el) return;
+    el.innerHTML = '';
+    const msgs = this._dmThreads.get(this._activeDM) || [];
+    msgs.forEach(m => {
+      const isSelf = m.from === this.localProfile.email;
+      el.appendChild(this._bubble(isSelf ? 'You' : (this._presence.find(p => p.email === m.from)?.name || m.from), m.text, isSelf));
+    });
+    el.scrollTop = el.scrollHeight;
+  }
+
+  _sendDM() {
+    const text = (this._dmInput.value || '').trim();
+    if (!text || !this._activeDM) return;
+    this.socket?.sendDM(this._activeDM, text); // server echoes back to us
+    this._dmInput.value = '';
+  }
+
+  onDMHistory(peer, messages) {
+    this._dmThreads.set(peer, messages || []);
+    if (this._activeDM === peer) this._renderDMThread();
+  }
+
+  onDM(peer, msg) {
+    const thread = this._dmThreads.get(peer) || [];
+    thread.push(msg);
+    this._dmThreads.set(peer, thread);
+    if (this._activeDM === peer && !this._chatMinimized) {
+      this._renderDMThread();
+    } else if (msg.from !== this.localProfile.email) {
+      this._dmUnread.set(peer, (this._dmUnread.get(peer) || 0) + 1);
+      this._renderDMList();
+      if (this._chatMinimized) {
+        this._unreadCount++;
+        this._unreadBadge.textContent = this._unreadCount;
+        this._unreadBadge.style.display = 'inline';
+      }
+    }
   }
 
   // ── media ─────────────────────────────────────────────────────────────────
@@ -1690,7 +1866,8 @@ export class WebRTCManager {
 
   // Show the current private zone's name in the chat header (or the default).
   setZoneLabel(name) {
-    if (this._chatTitle) this._chatTitle.textContent = name ? `🔒 ${name}` : '💬 Nearby Chat';
+    this._zoneName = name || null;
+    this._updateHeaderTitle();
   }
 
   _setMaximizer(on) {

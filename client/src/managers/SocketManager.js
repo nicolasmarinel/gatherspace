@@ -101,6 +101,11 @@ export class SocketManager {
     this.socket.on('map-zone-added',     (z) => this.scene.onMapZoneAdded?.(z));
     this.socket.on('map-zone-removed',   ({ id }) => this.scene.onMapZoneRemoved?.(id));
 
+    // Presence + direct messages
+    this.socket.on('presence',   (list) => this.scene.webRTC?.onPresence(list));
+    this.socket.on('dm-message', ({ peer, msg }) => this.scene.webRTC?.onDM(peer, msg));
+    this.socket.on('dm-history', ({ peer, messages }) => this.scene.webRTC?.onDMHistory(peer, messages));
+
     this.socket.on('disconnect', (reason) => console.log('Socket disconnected:', reason));
     this.socket.on('connect_error', (err) => console.error('Connection error:', err));
   }
@@ -143,6 +148,8 @@ export class SocketManager {
   sendMapCollision(cells) { this.socket?.emit('map-collision', { cells }); }
   sendZoneAdd(name, cells) { this.socket?.emit('map-zone-add', { name, cells }); }
   sendZoneDelete(id)       { this.socket?.emit('map-zone-delete', { id }); }
+  sendDM(to, text)         { this.socket?.emit('dm-send', { to, text }); }
+  requestDMHistory(peer)   { this.socket?.emit('dm-history', { peer }); }
 
   get id() { return this.socket?.id; }
 

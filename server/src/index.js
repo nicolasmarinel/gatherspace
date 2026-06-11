@@ -66,7 +66,7 @@ async function resolveIdentity({ idToken, sessionId }) {
       if (ALLOWED_EMAILS.length && !ALLOWED_EMAILS.includes(email)) {
         return { error: 'not-allowed' };
       }
-      return { identity: payload.sub, name: payload.name, email };
+      return { identity: payload.sub, name: payload.name, email, picture: payload.picture };
     } catch (e) {
       // Expired/invalid token: only accept the client sessionId as a fallback
       if (sessionId) return { identity: sessionId };
@@ -143,9 +143,51 @@ function mapPayload() {
   };
 }
 
+// ── presence + direct messages ──────────────────────────────────────────────
+const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
+const DMS_FILE = path.join(DATA_DIR, 'dms.json');
+function loadJson(file, fallback) {
+  try { if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) { console.error('Load failed', file, e.message); }
+  return fallback;
+}
+const profiles = new Map(Object.entries(loadJson(PROFILES_FILE, {}))); // email -> { name, picture }
+const dmConvos = loadJson(DMS_FILE, {});       // convKey -> [{ from, text, ts }]
+const onlineByEmail = new Map();               // email -> Set<socketId>
+
+let profSaveT = null, dmSaveT = null;
+function saveProfiles() {
+  if (profSaveT) return;
+  profSaveT = setTimeout(() => {
+    profSaveT = null;
+    try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(PROFILES_FILE, JSON.stringify(Object.fromEntries(profiles))); }
+    catch (e) { console.error('Save profiles failed:', e.message); }
+  }, 1000);
+}
+function saveDMs() {
+  if (dmSaveT) return;
+  dmSaveT = setTimeout(() => {
+    dmSaveT = null;
+    try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(DMS_FILE, JSON.stringify(dmConvos)); }
+    catch (e) { console.error('Save DMs failed:', e.message); }
+  }, 1000);
+}
+const convKey = (a, b) => [a, b].sort().join('|');
+
+// Roster = allowlist ∪ everyone who has ever signed in, with live online flags
+function rosterPayload() {
+  const emails = new Set([...ALLOWED_EMAILS, ...profiles.keys()]);
+  return [...emails].map(email => {
+    const p = profiles.get(email) || {};
+    return { email, name: p.name || email, picture: p.picture || '', online: (onlineByEmail.get(email)?.size || 0) > 0 };
+  });
+}
+function broadcastPresence() { io.emit('presence', rosterPayload()); }
+
 io.on('connection', (socket) => {
   let currentRoom = null;
   let playerData = null;
+  let myEmail = null; // set once the join is authenticated
 
   socket.on('join-room', async ({ roomId, name, avatar, x, y, sessionId, idToken }) => {
     const res = await resolveIdentity({ idToken, sessionId });
@@ -179,6 +221,38 @@ io.on('connection', (socket) => {
 
     // Send the current shared map to the newcomer
     socket.emit('map-state', mapPayload());
+
+    // Presence + profile registry (only for authenticated users with an email)
+    if (res.email) {
+      myEmail = res.email;
+      profiles.set(myEmail, { name: playerData.name, picture: res.picture || profiles.get(myEmail)?.picture || '' });
+      saveProfiles();
+      if (!onlineByEmail.has(myEmail)) onlineByEmail.set(myEmail, new Set());
+      onlineByEmail.get(myEmail).add(socket.id);
+      broadcastPresence();
+    } else {
+      socket.emit('presence', rosterPayload());
+    }
+  });
+
+  // ── direct messages ──
+  socket.on('dm-history', ({ peer }) => {
+    if (!myEmail || !peer) return;
+    socket.emit('dm-history', { peer, messages: dmConvos[convKey(myEmail, peer)] || [] });
+  });
+
+  socket.on('dm-send', ({ to, text }) => {
+    if (!myEmail || !to || typeof text !== 'string' || !text.trim()) return;
+    const msg = { from: myEmail, text: text.trim().slice(0, 2000), ts: Date.now() };
+    const key = convKey(myEmail, to);
+    if (!dmConvos[key]) dmConvos[key] = [];
+    dmConvos[key].push(msg);
+    if (dmConvos[key].length > 500) dmConvos[key] = dmConvos[key].slice(-500);
+    saveDMs();
+    // deliver to the recipient (peer = sender, from their view)
+    onlineByEmail.get(to)?.forEach(sid => io.to(sid).emit('dm-message', { peer: myEmail, msg }));
+    // echo to all of the sender's own sockets (peer = recipient, from sender view)
+    onlineByEmail.get(myEmail)?.forEach(sid => io.to(sid).emit('dm-message', { peer: to, msg }));
   });
 
   // ── map editing (shared across everyone; broadcast to all incl. sender) ──
@@ -285,6 +359,11 @@ io.on('connection', (socket) => {
       if (room.size === 0) rooms.delete(currentRoom);
     }
     io.to(currentRoom).emit('player-left', socket.id);
+    if (myEmail) {
+      const set = onlineByEmail.get(myEmail);
+      if (set) { set.delete(socket.id); if (!set.size) onlineByEmail.delete(myEmail); }
+      broadcastPresence();
+    }
     console.log(`[${currentRoom}] ${playerData?.name} left`);
   });
 });
