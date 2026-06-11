@@ -120,18 +120,18 @@ export class WebRTCManager {
     nameEl.textContent = this.localName;
 
     const left = [avatar, nameEl, sep(),
-      this._ctrlBtn('🎤', 'Mute mic',       'mute', () => this._toggleMute()),
-      this._ctrlBtn('📷', 'Hide camera',    'cam',  () => this._toggleCam()),
-      this._ctrlBtn('👁️', 'Hide self-view', 'self', () => this._toggleSelf()),
+      this._ctrlBtn('mic',        'Mute mic',       'mute', () => this._toggleMute()),
+      this._ctrlBtn('videocam',   'Hide camera',    'cam',  () => this._toggleCam()),
+      this._ctrlBtn('visibility', 'Hide self-view', 'self', () => this._toggleSelf()),
     ];
-    if (this._canScreenShare) left.push(this._ctrlBtn('🖥️', 'Share screen', 'screen', () => this._toggleScreenShare()));
-    left.push(this._ctrlBtn('⚙️', 'Settings', '', () => this._openSettings()));
+    if (this._canScreenShare) left.push(this._ctrlBtn('screen_share', 'Share screen', 'screen', () => this._toggleScreenShare()));
+    left.push(this._ctrlBtn('settings', 'Settings', '', () => this._openSettings()));
 
     const spacer = mk('div', 'flex:1;');
 
     // Right (right-aligned): hammer then messages, so messages is right-most
-    this._editBarBtn = this._ctrlBtn('🛠', 'Edit map', '', () => this.onEditMap?.());
-    this._dmBarBtn = this._ctrlBtn('💬', 'Messages', '', () => this._openMessages());
+    this._editBarBtn = this._ctrlBtn('hardware', 'Edit map', '', () => this.onEditMap?.());
+    this._dmBarBtn = this._ctrlBtn('chat_bubble', 'Messages', '', () => this._openMessages());
 
     this._bar.append(...left, spacer, this._editBarBtn, this._dmBarBtn);
     document.body.appendChild(this._bar);
@@ -212,14 +212,18 @@ export class WebRTCManager {
 
   // data-gs-ctrl is used by _syncControlBtns() to find all instances
   // (both in the fixed bar and inside the expanded overlay header).
-  _ctrlBtn(icon, title, ctrlKey, onClick) {
+  // iconName is a Material Symbols ligature (e.g. 'mic', 'settings').
+  _ctrlBtn(iconName, title, ctrlKey, onClick) {
     const btn = mk('button', `
-      background:none; border:none; font-size:20px; cursor:pointer;
-      padding:4px 8px; border-radius:8px; line-height:1;
-      transition:background .15s; color:inherit;
+      background:none; border:none; cursor:pointer; padding:6px 8px; border-radius:8px;
+      line-height:0; transition:background .15s; display:inline-flex; align-items:center;
     `);
     btn.title = title;
-    btn.textContent = icon;
+    const ic = mk('span', 'font-size:24px; color:#94a3b8;'); // lighter shade of the bar bg
+    ic.className = 'material-symbols-outlined';
+    ic.textContent = iconName;
+    btn._iconEl = ic;
+    btn.appendChild(ic);
     if (ctrlKey) btn.dataset.gsCtrl = ctrlKey;
     btn.addEventListener('mouseenter', () => { if (!btn.dataset.active) btn.style.background = '#334155'; });
     btn.addEventListener('mouseleave', () => { if (!btn.dataset.active) btn.style.background = 'none'; });
@@ -230,14 +234,14 @@ export class WebRTCManager {
 
   _applyCtrlState(btn) {
     const map = {
-      mute:   { active: this.audioMuted,     on: '🔇', off: '🎤', bg: '#7f1d1d' },
-      cam:    { active: this.videoHidden,    on: '🚫', off: '📷', bg: '#7f1d1d' },
-      self:   { active: this.selfViewHidden, on: '🙈', off: '👁️', bg: '#334155' },
-      screen: { active: this.screenSharing,  on: '🛑', off: '🖥️', bg: '#14532d' },
+      mute:   { active: this.audioMuted,     on: 'mic_off',           off: 'mic',          bg: '#7f1d1d' },
+      cam:    { active: this.videoHidden,    on: 'videocam_off',      off: 'videocam',     bg: '#7f1d1d' },
+      self:   { active: this.selfViewHidden, on: 'visibility_off',    off: 'visibility',   bg: '#334155' },
+      screen: { active: this.screenSharing,  on: 'stop_screen_share', off: 'screen_share', bg: '#14532d' },
     };
     const entry = map[btn.dataset.gsCtrl];
     if (!entry) return;
-    btn.textContent = entry.active ? entry.on : entry.off;
+    if (btn._iconEl) btn._iconEl.textContent = entry.active ? entry.on : entry.off;
     btn.style.background = entry.active ? entry.bg : 'none';
     btn.dataset.active = entry.active ? '1' : '';
   }
@@ -498,19 +502,19 @@ export class WebRTCManager {
     `);
     // Recreate toggles inside the overlay — _syncControlBtns() keeps them in sync
     const hdrBtns = [
-      this._ctrlBtn('🎤', 'Mute mic',       'mute', () => this._toggleMute()),
-      this._ctrlBtn('📷', 'Hide camera',    'cam',  () => this._toggleCam()),
-      this._ctrlBtn('👁️', 'Hide self-view', 'self', () => this._toggleSelf()),
+      this._ctrlBtn('mic',        'Mute mic',       'mute', () => this._toggleMute()),
+      this._ctrlBtn('videocam',   'Hide camera',    'cam',  () => this._toggleCam()),
+      this._ctrlBtn('visibility', 'Hide self-view', 'self', () => this._toggleSelf()),
     ];
     if (this._canScreenShare) {
       hdrBtns.push(
         mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-        this._ctrlBtn('🖥️', 'Share screen', 'screen', () => this._toggleScreenShare()),
+        this._ctrlBtn('screen_share', 'Share screen', 'screen', () => this._toggleScreenShare()),
       );
     }
     hdrBtns.push(
       mk('div', 'width:1px;height:22px;background:#334155;margin:0 2px;'),
-      this._ctrlBtn('⚙️', 'Settings', '', () => this._openSettings()),
+      this._ctrlBtn('settings', 'Settings', '', () => this._openSettings()),
     );
     header.append(...hdrBtns);
     const spacer = mk('div', 'flex:1;');
@@ -1133,7 +1137,15 @@ export class WebRTCManager {
     });
     const sendBtn = this._sendButton(() => { this._sendMessage(this._chatInput.value); this._chatInput.value = ''; this._chatInput.focus(); });
     inputRow.append(this._chatInput, sendBtn);
-    view.append(this._chatMessages, inputRow);
+
+    // Advisory: nearby / private-area chat is never logged
+    const advisory = mk('div', `
+      padding:4px 10px; font-family:monospace; font-size:10px; color:#64748b;
+      text-align:center; border-top:1px solid #1e293b; flex-shrink:0;
+    `);
+    advisory.textContent = 'Chats here are not saved';
+
+    view.append(this._chatMessages, advisory, inputRow);
     return view;
   }
 
@@ -1218,17 +1230,19 @@ export class WebRTCManager {
   }
 
   _updatePanelMode() {
-    const nearby = this._hasNearby();
-    if (this._nearbyView) this._nearbyView.style.display = nearby ? 'flex' : 'none';
-    if (this._onlineView) this._onlineView.style.display = nearby ? 'none' : 'flex';
-    this._updateHeaderTitle(nearby);
+    // The ephemeral "area" chat is shown whenever you're in a private zone OR
+    // near someone; otherwise the panel is the online/DM view.
+    const contextChat = !!this._zoneName || this._hasNearby();
+    if (this._nearbyView) this._nearbyView.style.display = contextChat ? 'flex' : 'none';
+    if (this._onlineView) this._onlineView.style.display = contextChat ? 'none' : 'flex';
+    this._updateHeaderTitle();
   }
 
-  _updateHeaderTitle(nearby = this._hasNearby()) {
+  _updateHeaderTitle() {
     if (!this._chatTitle) return;
     this._chatTitle.textContent = this._zoneName
       ? `🔒 ${this._zoneName}`
-      : (nearby ? '💬 Nearby Chat' : '👥 Online');
+      : (this._hasNearby() ? '💬 Nearby Chat' : '👥 Online');
   }
 
   _toggleChatMinimize() {
@@ -1236,8 +1250,9 @@ export class WebRTCManager {
     this._chatMinimized = !this._chatMinimized;
     const hide = this._chatMinimized;
     this._chatBody.style.display = hide ? 'none' : 'flex';
-    // When expanded, stop above the bottom bar so the input isn't hidden
-    this._chat.style.bottom = hide ? 'auto' : '56px';
+    // When expanded, sit flush on top of the bottom bar (touching, no gap)
+    const barH = this._bar?.offsetHeight || 52;
+    this._chat.style.bottom = hide ? 'auto' : `${barH}px`;
     this._chatMinBtn.textContent = hide ? '+' : '–';
     this._chatMinBtn.title = hide ? 'Expand' : 'Minimize';
   }
@@ -1947,10 +1962,11 @@ export class WebRTCManager {
     return this.peers.get(peerId)?.userGain ?? 1;
   }
 
-  // Show the current private zone's name in the chat header (or the default).
+  // Entering/leaving a private zone retitles the panel and switches it to the
+  // contextual area chat (vs the online/DM view).
   setZoneLabel(name) {
     this._zoneName = name || null;
-    this._updateHeaderTitle();
+    this._updatePanelMode();
   }
 
   _setMaximizer(on) {
