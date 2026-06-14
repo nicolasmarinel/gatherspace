@@ -23,6 +23,12 @@ export class LocalPlayer {
     this.sprite = scene.physics.add.sprite(x, y, ...idleTextureArgs(avatarIndex));
     this.sprite.setCollideWorldBounds(true);
     this.sprite.setDepth(4);
+    // Collision footprint = the avatar's feet (~1 tile), not the full sprite
+    // (which is up to 2 tiles tall). Otherwise the avatar's head overlaps a wall
+    // when standing in the tile just below it, blocking that tile too.
+    const bw = 22, bh = 16;
+    this.sprite.body.setSize(bw, bh);
+    this.sprite.body.setOffset((this.sprite.width - bw) / 2, this.sprite.height - bh);
 
     this.nameTag = scene.add.text(x, y - 38, name, {
       fontSize: '11px', color: '#fde68a', fontFamily: 'monospace',
