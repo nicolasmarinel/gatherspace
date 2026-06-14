@@ -162,10 +162,12 @@ export class GameScene extends Phaser.Scene {
 
   onMapZoneAdded(z) {
     if (!this._hasBg) return;
+    const ref = z._ref; if (ref !== undefined) delete z._ref;
     this.zones = (this.zones || []).filter(x => x.id !== z.id).concat(z);
     this._rebuildZoneIndex();
     this.mapEditor?.onZonesReloaded();
     this._currentZoneId = undefined; // force indicator refresh next frame
+    if (ref) this.mapEditor?._resolveRef(ref, z.id);
   }
 
   onMapZoneRemoved(id) {
@@ -307,7 +309,9 @@ export class GameScene extends Phaser.Scene {
 
   onMapObjectAdded(o) {
     if (!this._hasBg) return;
+    const ref = o._ref; if (ref !== undefined) delete o._ref;
     if (!this.mapObjects.has(o.id)) this._addMapObjectSprite(o);
+    if (ref) this.mapEditor?._resolveRef(ref, o.id);
   }
 
   onMapObjectMoved({ id, x, y, ox, oy }) {

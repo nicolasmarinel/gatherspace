@@ -148,7 +148,7 @@ export class SocketManager {
   sendMapLayer(id, layer) { this.socket?.emit('map-object-layer', { id, layer }); }
   sendMapDelete(id)      { this.socket?.emit('map-delete-object', { id }); }
   sendMapCollision(cells) { this.socket?.emit('map-collision', { cells }); }
-  sendZoneAdd(name, cells) { this.socket?.emit('map-zone-add', { name, cells }); }
+  sendZoneAdd(name, cells, ref) { this.socket?.emit('map-zone-add', { name, cells, ref }); }
   sendZoneDelete(id)       { this.socket?.emit('map-zone-delete', { id }); }
   sendZoneLock(id, locked) { this.socket?.emit('map-zone-lock', { id, locked }); }
   sendZoneClaim(id, owner) { this.socket?.emit('map-zone-claim', { id, owner }); }

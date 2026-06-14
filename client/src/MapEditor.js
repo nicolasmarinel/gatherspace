@@ -29,6 +29,8 @@ export class MapEditor {
     this._zonePending = new Set(); // tiles for the zone currently being drawn
     this._zoneLabels = [];         // Phaser text labels for zone names
     this._zonePainting = false;
+    this._undoStack = [];          // local edit history (inverse actions)
+    this._pendingRefs = new Map(); // ref -> undo entry awaiting its server id
 
     this._buildToggle();
     this._buildToolbar();
@@ -68,8 +70,11 @@ export class MapEditor {
 
     // Mode tabs
     this._tabObjects = this._tab('Objects', () => this.setMode('objects'));
-    this._tabColl = this._tab('Collisions', () => this.setMode('collisions'));
-    this._tabZones = this._tab('Zones', () => this.setMode('zones'));
+    this._tabColl = this._tab('Collision Zones', () => this.setMode('collisions'));
+    this._tabZones = this._tab('Private Zones', () => this.setMode('zones'));
+
+    // Undo (works across object / collision / zone placements)
+    this._undoBtn = this._btn('↶ Undo', () => this.undo());
 
     // Object tools
     this._delBtn = this._btn('🗑 Delete', () => this.deleteSelected());
@@ -117,7 +122,7 @@ export class MapEditor {
     const exit = this._btn('✓ Done', () => this.exit());
     exit.style.marginLeft = 'auto';
 
-    this._bar.append(title, this._tabObjects, this._tabColl, this._tabZones,
+    this._bar.append(title, this._tabObjects, this._tabColl, this._tabZones, this._undoBtn,
       this._delBtn, this._layerDownBtn, this._layerLabel, this._layerUpBtn,
       this._paintBtn, this._eraseBtn,
       this._zoneNameInput, this._zoneSaveBtn, this._zoneClearBtn,
@@ -188,6 +193,8 @@ export class MapEditor {
     this._toggle.textContent = '✓ Done';
     this._toggle.style.background = '#14532d';
     this._bar.style.display = 'flex';
+    this._refreshZoneList();
+    this._refreshUndoBtn();
     this.setMode(this.mode);
   }
 
@@ -296,6 +303,7 @@ export class MapEditor {
     if (!this.selectedId) return;
     const o = this.scene.mapObjects.get(this.selectedId)?.getData('obj');
     if (o && !this.scene.canEditTile(o.x, o.y)) { this._flash('That area is claimed'); return; }
+    if (o) this._pushUndo({ kind: 'delete-object', obj: { f: o.f, x: o.x, y: o.y, ox: o.ox || 0, oy: o.oy || 0, z: o.z || 0, layer: o.layer || 0 } });
     this.scene.socket?.sendMapDelete(this.selectedId);
     this.deselect();
   }
@@ -306,7 +314,10 @@ export class MapEditor {
     if (!o) return;
     if (!this.scene.canEditTile(o.x, o.y)) { this._flash('That area is claimed'); return; }
     const next = Math.max(-4, Math.min(4, (o.layer || 0) + delta));
-    if (next !== (o.layer || 0)) this.scene.socket?.sendMapLayer(this.selectedId, next);
+    if (next !== (o.layer || 0)) {
+      this._pushUndo({ kind: 'layer-object', id: this.selectedId, prevLayer: o.layer || 0 });
+      this.scene.socket?.sendMapLayer(this.selectedId, next);
+    }
   }
 
   // ── pointer interactions ─────────────────────────────────────────────────────
@@ -335,6 +346,7 @@ export class MapEditor {
     if (this.mode === 'collisions') {
       this._painting = true;
       this._paintBatch = [];
+      this._paintUndo = []; // previous solid state of each painted cell
       this._paintAt(wx, wy);
       return;
     }
@@ -349,7 +361,9 @@ export class MapEditor {
     if (this.brush) {
       const { col, row } = this._tileAt(wx, wy);
       if (!this.scene.canEditTile(col, row)) { this._flash('That area is claimed'); return; }
-      this.scene.socket?.sendMapAdd({ f: this.brush, x: col, y: row, ox: 0, oy: 0, layer: 0 });
+      const ref = this._newRef();
+      this.scene.socket?.sendMapAdd({ f: this.brush, x: col, y: row, ox: 0, oy: 0, layer: 0, ref });
+      this._pushUndo(this._registerRef(ref, { kind: 'add-object' }));
       return;
     }
 
@@ -360,7 +374,8 @@ export class MapEditor {
       const o = img.getData('obj');
       // Selection is allowed for viewing, but you can only drag objects you may edit
       if (this.scene.canEditTile(o.x, o.y)) {
-        this._drag = { id: hit, offX: wx - img.x, offY: wy - img.y, moved: false };
+        this._drag = { id: hit, offX: wx - img.x, offY: wy - img.y, moved: false,
+          prev: { x: o.x, y: o.y, ox: o.ox || 0, oy: o.oy || 0 } };
       }
     } else {
       this.deselect();
@@ -397,8 +412,12 @@ export class MapEditor {
 
     if (this._painting) {
       this._painting = false;
-      if (this._paintBatch.length) this.scene.socket?.sendMapCollision(this._paintBatch);
+      if (this._paintBatch.length) {
+        this.scene.socket?.sendMapCollision(this._paintBatch);
+        this._pushUndo({ kind: 'collision', cells: this._paintUndo });
+      }
       this._paintBatch = [];
+      this._paintUndo = [];
       return;
     }
 
@@ -414,6 +433,7 @@ export class MapEditor {
         // Don't allow dropping into a claimed area you can't edit; snap back instead
         if (this.scene.canEditTile(x, y)) {
           this.scene.socket?.sendMapMove({ id: this._drag.id, x, y, ox: o.ox || 0, oy: o.oy || 0 });
+          this._pushUndo({ kind: 'move-object', id: this._drag.id, prev: this._drag.prev });
         } else {
           img.setPosition(o.x * T + (o.ox || 0), o.y * T + (o.oy || 0));
           img.setDepth(this.scene._objDepthFor(img, o));
@@ -435,6 +455,7 @@ export class MapEditor {
     if (!state) return;
     const solid = this.erase ? 0 : 1;
     if (state[index] === solid) return;
+    this._paintUndo?.push({ i: index, solid: state[index] }); // remember prior state
     state[index] = solid;
     if (solid) this.scene._addCollisionZone(index); else this.scene._removeCollisionZone(index);
     this._paintBatch.push({ i: index, solid });
@@ -478,7 +499,9 @@ export class MapEditor {
     if (!name) { this._flash('Name the zone first'); return; }
     if (!cells.length) { this._flash('Paint the zone tiles first'); return; }
     if (!this._isContiguous(cells)) { this._flash('Tiles must form one contiguous area'); return; }
-    this.scene.socket?.sendZoneAdd(name, cells);
+    const ref = this._newRef();
+    this.scene.socket?.sendZoneAdd(name, cells, ref);
+    this._pushUndo(this._registerRef(ref, { kind: 'add-zone' }));
     this._zonePending.clear();
     this._zoneNameInput.value = '';
     this.redrawOverlay();
@@ -488,6 +511,8 @@ export class MapEditor {
   _deleteSelectedZone() {
     const id = Number(this._zoneSelect.value);
     if (!id) return;
+    const z = (this.scene.zones || []).find(zz => zz.id === id);
+    if (z) this._pushUndo({ kind: 'delete-zone', name: z.name, cells: [...z.cells] });
     this.scene.socket?.sendZoneDelete(id);
   }
 
@@ -536,12 +561,78 @@ export class MapEditor {
   }
 
   onZonesReloaded() {
-    if (this.mode === 'zones') { this._refreshZoneList(); this.redrawOverlay(); }
+    // Always keep the zone list current (the dropdown is hidden outside zones
+    // mode anyway); only the overlay is mode-specific.
+    this._refreshZoneList();
+    this.redrawOverlay();
   }
 
   _flash(msg, color = '#fca5a5') {
     this._hint.textContent = msg;
     this._hint.style.color = color;
+  }
+
+  // ── undo ────────────────────────────────────────────────────────────────────
+
+  _newRef() { return 'r' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
+
+  // Register an add-style entry whose server id arrives later (via _resolveRef)
+  _registerRef(ref, entry) {
+    entry.ref = ref; entry.id = null;
+    this._pendingRefs.set(ref, entry);
+    return entry;
+  }
+
+  _resolveRef(ref, id) {
+    const e = this._pendingRefs.get(ref);
+    if (e) { e.id = id; this._pendingRefs.delete(ref); }
+  }
+
+  _pushUndo(entry) {
+    this._undoStack.push(entry);
+    if (this._undoStack.length > 60) this._undoStack.shift();
+    this._refreshUndoBtn();
+  }
+
+  _refreshUndoBtn() {
+    if (!this._undoBtn) return;
+    const has = this._undoStack.length > 0;
+    this._undoBtn.disabled = !has;
+    this._undoBtn.style.opacity = has ? '1' : '0.5';
+  }
+
+  // Reverse the most recent local edit. Undo actions don't push new undo
+  // entries, and the server still enforces permissions on them.
+  undo() {
+    const e = this._undoStack.pop();
+    this._refreshUndoBtn();
+    if (!e) { this._flash('Nothing to undo'); return; }
+    const s = this.scene.socket;
+    switch (e.kind) {
+      case 'add-object':
+        if (e.id) s?.sendMapDelete(e.id);
+        else { this._flash('Undo not ready yet'); }
+        break;
+      case 'move-object':
+        s?.sendMapMove({ id: e.id, x: e.prev.x, y: e.prev.y, ox: e.prev.ox, oy: e.prev.oy });
+        break;
+      case 'delete-object':
+        s?.sendMapAdd(e.obj); // reappears (with a new id)
+        break;
+      case 'layer-object':
+        s?.sendMapLayer(e.id, e.prevLayer);
+        break;
+      case 'collision':
+        if (e.cells?.length) s?.sendMapCollision(e.cells);
+        break;
+      case 'add-zone':
+        if (e.id) s?.sendZoneDelete(e.id);
+        else { this._flash('Undo not ready yet'); }
+        break;
+      case 'delete-zone':
+        s?.sendZoneAdd(e.name, e.cells, this._newRef());
+        break;
+    }
   }
 
   _clearZoneLabels() {

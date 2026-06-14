@@ -303,12 +303,12 @@ io.on('connection', (socket) => {
   });
 
   // ── map editing (shared across everyone; broadcast to all incl. sender) ──
-  socket.on('map-add-object', ({ f, x, y, ox, oy, z, layer }) => {
+  socket.on('map-add-object', ({ f, x, y, ox, oy, z, layer, ref }) => {
     if (typeof f !== 'string') return;
     if (!canEditTile(myEmail, x | 0, y | 0)) return; // claimed-zone: owner only
     const obj = { id: `o${mapState.nextId++}`, f, x: x | 0, y: y | 0, ox: ox || 0, oy: oy || 0, z: z || 0, layer: Number.isInteger(layer) ? layer : 0 };
     mapState.placements.push(obj);
-    io.emit('map-object-added', obj);
+    io.emit('map-object-added', { ...obj, _ref: ref }); // _ref lets the sender map this to its undo entry
     scheduleSave();
   });
 
@@ -351,15 +351,16 @@ io.on('connection', (socket) => {
     scheduleSave();
   });
 
-  socket.on('map-zone-add', ({ name, cells }) => {
+  socket.on('map-zone-add', ({ name, cells, ref }) => {
     if (typeof name !== 'string' || !name.trim() || !Array.isArray(cells) || !cells.length) return;
     const zone = {
       id: mapState.nextZoneId++,
       name: name.trim().slice(0, 40),
       cells: cells.filter(Number.isInteger),
+      locked: false, owner: null,
     };
     mapState.zones.push(zone);
-    io.emit('map-zone-added', zone);
+    io.emit('map-zone-added', { ...zone, _ref: ref });
     scheduleSave();
   });
 
