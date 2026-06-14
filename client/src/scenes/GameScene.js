@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { MAP_WIDTH, MAP_HEIGHT, PROXIMITY_OPEN_DIST, PROXIMITY_CLOSE_DIST, PLAYER_SPEED } from '../constants.js';
+import { MAP_WIDTH, MAP_HEIGHT, PROXIMITY_OPEN_DIST, PROXIMITY_CLOSE_DIST, PLAYER_SPEED, ADMIN_EMAILS } from '../constants.js';
 import { LocalPlayer } from '../objects/LocalPlayer.js';
 import { RemotePlayer } from '../objects/RemotePlayer.js';
 import { SocketManager } from '../managers/SocketManager.js';
@@ -175,6 +175,33 @@ export class GameScene extends Phaser.Scene {
     this._currentZoneId = undefined;
   }
 
+  onMapZoneClaimed(id, owner) {
+    const z = this._zoneById?.get(id);
+    if (z) z.owner = owner || null;
+    this.mapEditor?.onZonesReloaded();
+    this._currentZoneId = undefined; // refresh the lock button's permission state
+  }
+
+  _myEmail() { return (this.email || '').toLowerCase(); }
+  _isAdmin() { return ADMIN_EMAILS.includes(this._myEmail()); }
+
+  // Can the local user edit an object at this tile? (free tile / zone owner / admin)
+  canEditTile(tx, ty) {
+    const W = this._mapTilesW;
+    if (!W) return true;
+    const idx = ty * W + tx;
+    const email = this._myEmail();
+    for (const z of (this.zones || [])) {
+      if (z.owner && z.cells.includes(idx)) return z.owner === email || this._isAdmin();
+    }
+    return true;
+  }
+
+  // Can the local user lock/unlock a zone? (unclaimed, its owner, or admin)
+  _canControlZone(zone) {
+    return !zone.owner || zone.owner === this._myEmail() || this._isAdmin();
+  }
+
   // Darken the world + label the chat with the zone name when the local player
   // is inside a private zone.
   _updateLocalZone(localZone) {
@@ -182,7 +209,11 @@ export class GameScene extends Phaser.Scene {
     this._currentZoneId = localZone;
     const zone = localZone != null ? this._zoneById?.get(localZone) : null;
     this._drawZoneDim(zone);
-    this.webRTC?.setZoneLabel(zone ? zone.name : null, zone ? !!zone.locked : false);
+    this.webRTC?.setZoneLabel(
+      zone ? zone.name : null,
+      zone ? !!zone.locked : false,
+      zone ? this._canControlZone(zone) : false,
+    );
     this._rebuildLockCollisions(localZone); // entering/leaving a locked zone changes passability
   }
 

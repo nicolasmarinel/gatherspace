@@ -10,6 +10,13 @@ export const MAP_HEIGHT = 1800;
 export const PROXIMITY_OPEN_DIST = 220;
 export const PROXIMITY_CLOSE_DIST = 300;
 
+// Administrators (UI gating only — the server independently enforces this list)
+export const ADMIN_EMAILS = [
+  'nicolas.marinel@gmail.com',
+  'nicolasm@paperstreetmedia.com',
+  'stomper6@gmail.com',
+];
+
 export const AVATAR_COLORS = [
   { body: 0xe74c3c, dark: 0xc0392b, label: 'Red' },
   { body: 0x3498db, dark: 0x2980b9, label: 'Blue' },

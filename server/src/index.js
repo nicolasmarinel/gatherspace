@@ -15,6 +15,12 @@ const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || process.env.VITE_ALLOWED_E
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 console.log(`Auth: ${googleClient ? 'Google sign-in required' : 'open (guest)'}; allowlist: ${ALLOWED_EMAILS.length || 'none'}`);
 
+// Administrators — the only accounts that may assign claimed zones.
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS ||
+  'nicolas.marinel@gmail.com,nicolasm@paperstreetmedia.com,stomper6@gmail.com')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const isAdmin = (email) => !!email && ADMIN_EMAILS.includes(email);
+
 const app = express();
 app.use(cors());
 app.get('/health', (_req, res) => res.json({ ok: true }));
@@ -103,6 +109,7 @@ function normalizeMap(m) {
     id: z.id ?? i + 1, name: String(z.name || `Zone ${i + 1}`).slice(0, 40),
     cells: Array.isArray(z.cells) ? z.cells.filter(Number.isInteger) : [],
     locked: !!z.locked,
+    owner: z.owner ? String(z.owner).toLowerCase() : null, // claimed-zone owner email
   }));
   const nextZoneId = zones.reduce((mx, z) => Math.max(mx, z.id), 0) + 1;
   return { dims: m.dims, tile: m.tile, collisions: col, placements, zones, nextId: maxId + 1, nextZoneId };
@@ -211,6 +218,19 @@ function releaseZoneIfEmpty(zoneId) {
   }
 }
 
+// Owner email of the claimed zone covering a tile, or null if unclaimed.
+function ownerOfTile(tx, ty) {
+  if (!mapState.dims) return null;
+  const idx = ty * mapState.dims[0] + tx;
+  for (const z of mapState.zones) if (z.owner && z.cells.includes(idx)) return z.owner;
+  return null;
+}
+// Can this user edit an object at this tile? (free tile, the zone's owner, or an admin)
+function canEditTile(email, tx, ty) {
+  const owner = ownerOfTile(tx, ty);
+  return !owner || owner === email || isAdmin(email);
+}
+
 io.on('connection', (socket) => {
   let currentRoom = null;
   let playerData = null;
@@ -285,6 +305,7 @@ io.on('connection', (socket) => {
   // ── map editing (shared across everyone; broadcast to all incl. sender) ──
   socket.on('map-add-object', ({ f, x, y, ox, oy, z, layer }) => {
     if (typeof f !== 'string') return;
+    if (!canEditTile(myEmail, x | 0, y | 0)) return; // claimed-zone: owner only
     const obj = { id: `o${mapState.nextId++}`, f, x: x | 0, y: y | 0, ox: ox || 0, oy: oy || 0, z: z || 0, layer: Number.isInteger(layer) ? layer : 0 };
     mapState.placements.push(obj);
     io.emit('map-object-added', obj);
@@ -294,6 +315,8 @@ io.on('connection', (socket) => {
   socket.on('map-move-object', ({ id, x, y, ox, oy }) => {
     const obj = mapState.placements.find(p => p.id === id);
     if (!obj) return;
+    // Owner-only for claimed zones: can't take an object from one, or drop into one
+    if (!canEditTile(myEmail, obj.x, obj.y) || !canEditTile(myEmail, x | 0, y | 0)) return;
     obj.x = x | 0; obj.y = y | 0;
     if (ox !== undefined) obj.ox = ox;
     if (oy !== undefined) obj.oy = oy;
@@ -304,6 +327,7 @@ io.on('connection', (socket) => {
   socket.on('map-object-z', ({ id, z }) => {
     const obj = mapState.placements.find(p => p.id === id);
     if (!obj || typeof z !== 'number') return;
+    if (!canEditTile(myEmail, obj.x, obj.y)) return;
     obj.z = z;
     io.emit('map-object-z', { id, z });
     scheduleSave();
@@ -312,6 +336,7 @@ io.on('connection', (socket) => {
   socket.on('map-object-layer', ({ id, layer }) => {
     const obj = mapState.placements.find(p => p.id === id);
     if (!obj || !Number.isInteger(layer)) return;
+    if (!canEditTile(myEmail, obj.x, obj.y)) return;
     obj.layer = Math.max(-4, Math.min(4, layer));
     io.emit('map-object-layer', { id, layer: obj.layer });
     scheduleSave();
@@ -320,6 +345,7 @@ io.on('connection', (socket) => {
   socket.on('map-delete-object', ({ id }) => {
     const i = mapState.placements.findIndex(p => p.id === id);
     if (i === -1) return;
+    if (!canEditTile(myEmail, mapState.placements[i].x, mapState.placements[i].y)) return;
     mapState.placements.splice(i, 1);
     io.emit('map-object-removed', { id });
     scheduleSave();
@@ -348,8 +374,20 @@ io.on('connection', (socket) => {
   socket.on('map-zone-lock', ({ id, locked }) => {
     const z = mapState.zones.find(z => z.id === id);
     if (!z) return;
+    // A claimed zone can only be locked/unlocked by its owner (or an admin)
+    if (z.owner && z.owner !== myEmail && !isAdmin(myEmail)) return;
     z.locked = !!locked;
     io.emit('map-zone-locked', { id, locked: z.locked });
+    scheduleSave();
+  });
+
+  // Assign / clear a claimed zone's owner — administrators only
+  socket.on('map-zone-claim', ({ id, owner }) => {
+    if (!isAdmin(myEmail)) return;
+    const z = mapState.zones.find(z => z.id === id);
+    if (!z) return;
+    z.owner = owner ? String(owner).toLowerCase().slice(0, 120) : null;
+    io.emit('map-zone-claimed', { id, owner: z.owner });
     scheduleSave();
   });
 

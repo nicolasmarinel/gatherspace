@@ -73,12 +73,6 @@ export class MapEditor {
 
     // Object tools
     this._delBtn = this._btn('🗑 Delete', () => this.deleteSelected());
-    this._zBtns = [
-      this._btn('⤒ Front', () => this._changeZ('front')),
-      this._btn('↑ Fwd',   () => this._changeZ('forward')),
-      this._btn('↓ Back',  () => this._changeZ('backward')),
-      this._btn('⤓ Bottom', () => this._changeZ('back')),
-    ];
     // Avatar-relative layer controls (0 = same layer as avatars / y-sorted)
     this._layerDownBtn = this._btn('▽ layer', () => this._changeLayer(-1));
     this._layerLabel = mk('span', 'font-family:monospace;font-size:12px;color:#94a3b8;min-width:78px;text-align:center;');
@@ -109,7 +103,14 @@ export class MapEditor {
       background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:6px;
       padding:5px; font-family:monospace; font-size:12px;
     `);
+    this._zoneSelect.addEventListener('change', () => this._populateOwnerOptions());
     this._zoneDelBtn = this._btn('🗑 Delete zone', () => this._deleteSelectedZone());
+    // Claim controls (administrators only) — assign a zone's owner
+    this._zoneOwnerSelect = mk('select', `
+      background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:6px;
+      padding:5px; font-family:monospace; font-size:12px; max-width:170px;
+    `);
+    this._zoneClaimBtn = this._btn('Set owner', () => this._setZoneOwner());
 
     this._hint = mk('span', 'color:#64748b; flex:1;');
 
@@ -117,9 +118,10 @@ export class MapEditor {
     exit.style.marginLeft = 'auto';
 
     this._bar.append(title, this._tabObjects, this._tabColl, this._tabZones,
-      this._delBtn, ...this._zBtns, this._layerDownBtn, this._layerLabel, this._layerUpBtn,
+      this._delBtn, this._layerDownBtn, this._layerLabel, this._layerUpBtn,
       this._paintBtn, this._eraseBtn,
-      this._zoneNameInput, this._zoneSaveBtn, this._zoneClearBtn, this._zoneSelect, this._zoneDelBtn,
+      this._zoneNameInput, this._zoneSaveBtn, this._zoneClearBtn,
+      this._zoneSelect, this._zoneDelBtn, this._zoneOwnerSelect, this._zoneClaimBtn,
       this._hint, exit);
     document.body.appendChild(this._bar);
   }
@@ -233,11 +235,6 @@ export class MapEditor {
     this._delBtn.style.display = obj ? '' : 'none';
     this._delBtn.disabled = !this.selectedId;
     this._delBtn.style.opacity = this.selectedId ? '1' : '0.5';
-    this._zBtns.forEach(b => {
-      b.style.display = obj ? '' : 'none';
-      b.disabled = !this.selectedId;
-      b.style.opacity = this.selectedId ? '1' : '0.5';
-    });
     const sel = this.selectedId ? this.scene.mapObjects.get(this.selectedId)?.getData('obj') : null;
     [this._layerDownBtn, this._layerUpBtn].forEach(b => {
       b.style.display = obj ? '' : 'none';
@@ -258,6 +255,10 @@ export class MapEditor {
     // Zone tools
     [this._zoneNameInput, this._zoneSaveBtn, this._zoneClearBtn, this._zoneSelect, this._zoneDelBtn]
       .forEach(el => el.style.display = zon ? '' : 'none');
+    // Claim controls are admin-only
+    const showClaim = zon && this.scene._isAdmin();
+    this._zoneOwnerSelect.style.display = showClaim ? '' : 'none';
+    this._zoneClaimBtn.style.display = showClaim ? '' : 'none';
 
     this._hint.style.color = '#64748b';
     if (obj) {
@@ -293,37 +294,17 @@ export class MapEditor {
 
   deleteSelected() {
     if (!this.selectedId) return;
+    const o = this.scene.mapObjects.get(this.selectedId)?.getData('obj');
+    if (o && !this.scene.canEditTile(o.x, o.y)) { this._flash('That area is claimed'); return; }
     this.scene.socket?.sendMapDelete(this.selectedId);
     this.deselect();
-  }
-
-  // Re-layer the selected object. z drives draw order across all objects.
-  _changeZ(op) {
-    if (!this.selectedId) return;
-    const sel = this.scene.mapObjects.get(this.selectedId)?.getData('obj');
-    if (!sel) return;
-    const zs = [...this.scene.mapObjects.values()].map(i => i.getData('obj').z);
-    let nz;
-    if (op === 'front') {
-      nz = Math.max(...zs) + 1;
-    } else if (op === 'back') {
-      nz = Math.min(...zs) - 1;
-    } else if (op === 'forward') {
-      const above = zs.filter(z => z > sel.z).sort((a, b) => a - b);
-      if (!above.length) return; // already on top
-      nz = above.length > 1 ? (above[0] + above[1]) / 2 : above[0] + 1;
-    } else { // backward
-      const below = zs.filter(z => z < sel.z).sort((a, b) => b - a);
-      if (!below.length) return; // already at bottom
-      nz = below.length > 1 ? (below[0] + below[1]) / 2 : below[0] - 1;
-    }
-    this.scene.socket?.sendMapZ(this.selectedId, nz);
   }
 
   _changeLayer(delta) {
     if (!this.selectedId) return;
     const o = this.scene.mapObjects.get(this.selectedId)?.getData('obj');
     if (!o) return;
+    if (!this.scene.canEditTile(o.x, o.y)) { this._flash('That area is claimed'); return; }
     const next = Math.max(-4, Math.min(4, (o.layer || 0) + delta));
     if (next !== (o.layer || 0)) this.scene.socket?.sendMapLayer(this.selectedId, next);
   }
@@ -367,7 +348,8 @@ export class MapEditor {
     // objects mode
     if (this.brush) {
       const { col, row } = this._tileAt(wx, wy);
-      this.scene.socket?.sendMapAdd({ f: this.brush, x: col, y: row, ox: 0, oy: 0, z: 0 });
+      if (!this.scene.canEditTile(col, row)) { this._flash('That area is claimed'); return; }
+      this.scene.socket?.sendMapAdd({ f: this.brush, x: col, y: row, ox: 0, oy: 0, layer: 0 });
       return;
     }
 
@@ -375,7 +357,11 @@ export class MapEditor {
     if (hit) {
       this.selectObject(hit);
       const img = this.scene.mapObjects.get(hit);
-      this._drag = { id: hit, offX: wx - img.x, offY: wy - img.y, moved: false };
+      const o = img.getData('obj');
+      // Selection is allowed for viewing, but you can only drag objects you may edit
+      if (this.scene.canEditTile(o.x, o.y)) {
+        this._drag = { id: hit, offX: wx - img.x, offY: wy - img.y, moved: false };
+      }
     } else {
       this.deselect();
       this._pan = { x: p.x, y: p.y };
@@ -392,7 +378,7 @@ export class MapEditor {
       const img = this.scene.mapObjects.get(this._drag.id);
       if (img) {
         img.setPosition(p.worldX - this._drag.offX, p.worldY - this._drag.offY);
-        img.setDepth(3 + (img.y + img.height) / 10000);
+        img.setDepth(this.scene._objDepthFor(img, img.getData('obj')));
         this._drag.moved = true;
       }
       return;
@@ -425,7 +411,14 @@ export class MapEditor {
         const T = this.scene._mapTile;
         const x = Math.round((img.x - (o.ox || 0)) / T);
         const y = Math.round((img.y - (o.oy || 0)) / T);
-        this.scene.socket?.sendMapMove({ id: this._drag.id, x, y, ox: o.ox || 0, oy: o.oy || 0 });
+        // Don't allow dropping into a claimed area you can't edit; snap back instead
+        if (this.scene.canEditTile(x, y)) {
+          this.scene.socket?.sendMapMove({ id: this._drag.id, x, y, ox: o.ox || 0, oy: o.oy || 0 });
+        } else {
+          img.setPosition(o.x * T + (o.ox || 0), o.y * T + (o.oy || 0));
+          img.setDepth(this.scene._objDepthFor(img, o));
+          this._flash('That area is claimed');
+        }
       }
       this._drag = null;
       return;
@@ -498,6 +491,12 @@ export class MapEditor {
     this.scene.socket?.sendZoneDelete(id);
   }
 
+  _setZoneOwner() {
+    const id = Number(this._zoneSelect.value);
+    if (!id) return;
+    this.scene.socket?.sendZoneClaim(id, this._zoneOwnerSelect.value || null);
+  }
+
   _refreshZoneList() {
     const sel = this._zoneSelect;
     if (!sel) return;
@@ -507,13 +506,33 @@ export class MapEditor {
       const o = document.createElement('option');
       o.value = ''; o.textContent = '(no zones)';
       sel.appendChild(o);
-      return;
+    } else {
+      zones.forEach(z => {
+        const o = document.createElement('option');
+        o.value = z.id;
+        o.textContent = z.name + (z.owner ? ` · ${z.owner}` : '') + (z.locked ? ' 🔒' : '');
+        sel.appendChild(o);
+      });
     }
-    zones.forEach(z => {
-      const o = document.createElement('option');
-      o.value = z.id; o.textContent = z.name;
-      sel.appendChild(o);
+    this._populateOwnerOptions();
+  }
+
+  // Owner dropdown: unclaimed / me / everyone in the roster, reflecting the
+  // currently-selected zone's owner.
+  _populateOwnerOptions() {
+    const sel = this._zoneOwnerSelect;
+    if (!sel) return;
+    const zone = (this.scene.zones || []).find(z => String(z.id) === this._zoneSelect.value);
+    sel.innerHTML = '';
+    const add = (val, text) => { const o = document.createElement('option'); o.value = val; o.textContent = text; sel.appendChild(o); };
+    add('', '(unclaimed)');
+    const me = (this.scene.email || '').toLowerCase();
+    if (me) add(me, `Me (${me})`);
+    (this.scene.webRTC?._presence || []).forEach(u => {
+      if (u.email && u.email !== me) add(u.email, `${u.name} (${u.email})`);
     });
+    if (zone?.owner && ![...sel.options].some(o => o.value === zone.owner)) add(zone.owner, zone.owner);
+    sel.value = zone?.owner || '';
   }
 
   onZonesReloaded() {
@@ -596,8 +615,9 @@ export class MapEditor {
         if (z.cells.length) {
           const lx = (sx / z.cells.length + 0.5) * T;
           const ly = (sy / z.cells.length + 0.5) * T;
-          const label = this.scene.add.text(lx, ly, z.name, {
-            fontSize: '14px', color: '#fff', fontFamily: 'monospace',
+          const text = z.name + (z.locked ? ' 🔒' : '') + (z.owner ? `\nclaimed: ${z.owner}` : '');
+          const label = this.scene.add.text(lx, ly, text, {
+            fontSize: '14px', color: '#fff', fontFamily: 'monospace', align: 'center',
             backgroundColor: '#000000aa', padding: { x: 4, y: 2 },
           }).setOrigin(0.5).setDepth(8.3);
           this._zoneLabels.push(label);

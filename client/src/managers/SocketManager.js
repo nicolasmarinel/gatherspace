@@ -101,6 +101,7 @@ export class SocketManager {
     this.socket.on('map-zone-added',     (z) => this.scene.onMapZoneAdded?.(z));
     this.socket.on('map-zone-removed',   ({ id }) => this.scene.onMapZoneRemoved?.(id));
     this.socket.on('map-zone-locked',    ({ id, locked }) => this.scene.onMapZoneLocked?.(id, locked));
+    this.socket.on('map-zone-claimed',   ({ id, owner }) => this.scene.onMapZoneClaimed?.(id, owner));
 
     // Presence + direct messages
     this.socket.on('presence',   (list) => this.scene.webRTC?.onPresence(list));
@@ -150,6 +151,7 @@ export class SocketManager {
   sendZoneAdd(name, cells) { this.socket?.emit('map-zone-add', { name, cells }); }
   sendZoneDelete(id)       { this.socket?.emit('map-zone-delete', { id }); }
   sendZoneLock(id, locked) { this.socket?.emit('map-zone-lock', { id, locked }); }
+  sendZoneClaim(id, owner) { this.socket?.emit('map-zone-claim', { id, owner }); }
   sendDM(to, text)         { this.socket?.emit('dm-send', { to, text }); }
   requestDMHistory(peer)   { this.socket?.emit('dm-history', { peer }); }
 

@@ -1987,13 +1987,19 @@ export class WebRTCManager {
 
   // Entering/leaving a private zone retitles the panel, switches it to the
   // contextual area chat, and shows the (un)lock padlock for that zone.
-  setZoneLabel(name, locked = false) {
+  // canControl=false for a claimed zone you don't own (status shown, not clickable).
+  setZoneLabel(name, locked = false, canControl = true) {
     this._zoneName = name || null;
     if (this._zoneLockBtn) {
       this._zoneLockBtn.style.display = name ? 'inline-flex' : 'none';
+      this._zoneLockBtn.disabled = !canControl;
+      this._zoneLockBtn.style.cursor = canControl ? 'pointer' : 'default';
+      this._zoneLockBtn.style.opacity = canControl ? '1' : '0.6';
       this._zoneLockIcon.textContent = locked ? 'lock' : 'lock_open';
       this._zoneLockIcon.style.color = locked ? '#fca5a5' : '#94a3b8';
-      this._zoneLockBtn.title = locked ? 'Unlock area' : 'Lock area';
+      this._zoneLockBtn.title = canControl
+        ? (locked ? 'Unlock area' : 'Lock area')
+        : (locked ? 'Locked by owner' : 'Owner-controlled area');
     }
     this._updatePanelMode();
   }
