@@ -1786,6 +1786,13 @@ export class WebRTCManager {
 
   onNearby(peerId, name) {
     if (name) this.peerNames.set(peerId, name);
+    // Drop a dead/closing peer so we re-establish instead of clinging to it
+    // (e.g. after the other person left a zone and came back).
+    const existing = this.peers.get(peerId);
+    if (existing) {
+      const st = existing.pc.connectionState;
+      if (st === 'failed' || st === 'closed' || st === 'disconnected') this.closePeer(peerId);
+    }
     // Gate on _mediaSettled (not localStream) so a camera-less client still
     // connects — it'll negotiate a receive-only peer.
     if (!this.peers.has(peerId) && this._mediaSettled) {
@@ -2030,11 +2037,13 @@ export class WebRTCManager {
   // ── signaling ─────────────────────────────────────────────────────────────
 
   async onOffer({ fromId, offer }) {
-    if (this.peers.has(fromId)) return;
     // Wait for media to settle instead of dropping the offer — this is the fix
     // for connections failing on first login until players walk apart & back.
     await this._mediaReadyPromise;
-    if (this.peers.has(fromId)) return; // a duplicate offer may have raced us
+    // A fresh offer supersedes any existing/stale peer (e.g. one left over from
+    // before the sender left and re-entered a private zone). Closing + accepting
+    // re-establishes the call instead of rejecting the offer.
+    if (this.peers.has(fromId)) this.closePeer(fromId);
 
     const pc = this._makePeerConnection(fromId);
     const peer = { id: fromId, pc, stream: null, audioEl: null, filmTile: null, dc: null };
