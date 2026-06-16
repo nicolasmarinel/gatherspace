@@ -3,16 +3,20 @@
 // video. A canvas is fed to a <video> via captureStream, and that video is what
 // enters PiP (so its content can switch live between minimap and call).
 //
-// Entering PiP requires a user activation, and switching tabs is NOT one — so
-// the request only succeeds when activation is still live (a gesture within the
-// last few seconds, e.g. moving the avatar before switching away). We keep one
-// persistent pipeline alive and continuously drawn so the capture stream never
-// stalls and the video is always ready for an instant, synchronous request.
+// Entering PiP requires a user activation, and switching tabs is NOT one. Two
+// entry points cover this:
+//   1. The bottom-bar toggle button — a real gesture, so it always works.
+//   2. The Media Session "enterpictureinpicture" action — Chrome invokes it
+//      gesture-free on tab-switch for pages with active camera/mic capture (we
+//      hold the local stream all session) and supplies activation itself. This
+//      is the only auto-enter path (no visibilitychange-enter, so the two can't
+//      race); visibilitychange only handles exit on return. Because every other
+//      <video> on the page is marked disablePictureInPicture, the action can
+//      only ever target our canvas video — no wrong-video / oversized window.
 //
-// (The Media Session "enterpictureinpicture" action would allow gesture-free
-// auto-PiP, but it triggers Chrome's "Automatic Picture-in-Picture" permission
-// and its own auto-PiP logic, which proved unpredictable — wrong video / wrong
-// size / broken re-entry — so we don't use it.)
+// The request must be synchronous on an already-ready video, so we keep one
+// persistent pipeline alive and continuously drawn (which also keeps the
+// capture stream from stalling).
 
 const SIZE = 320;        // PiP canvas px (square)
 const WINDOW_TILES = 5;  // 5x5 tiles around the avatar
@@ -46,7 +50,14 @@ export class PiPManager {
     // If the browser ever pauses it, resume so it's ready next switch.
     this.video.addEventListener('pause', () => { const r = this.video?.play(); if (r?.catch) r.catch(() => {}); });
 
-    this._onVis = () => { if (document.hidden) this._requestPiP(); else this._exitPiP(); };
+    // Auto-enter: browser-invoked on tab-switch for capture pages (gesture-free)
+    if ('mediaSession' in navigator && navigator.mediaSession.setActionHandler) {
+      try { navigator.mediaSession.setActionHandler('enterpictureinpicture', () => this._requestPiP()); } catch { /* unsupported action */ }
+    }
+
+    // visibilitychange handles EXIT only — keeping enter out of here avoids
+    // racing the action handler above.
+    this._onVis = () => { if (!document.hidden) this._exitPiP(); };
     document.addEventListener('visibilitychange', this._onVis);
   }
 
@@ -166,6 +177,7 @@ export class PiPManager {
   destroy() {
     if (this._onVis) document.removeEventListener('visibilitychange', this._onVis);
     if (this._timer) clearInterval(this._timer);
+    try { navigator.mediaSession?.setActionHandler?.('enterpictureinpicture', null); } catch { /* ignore */ }
     this._exitPiP();
     if (this.video) {
       try { this.video.srcObject?.getTracks?.().forEach(t => t.stop()); } catch { /* ignore */ }
