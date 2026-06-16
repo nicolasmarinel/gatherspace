@@ -5,6 +5,7 @@ import { RemotePlayer } from '../objects/RemotePlayer.js';
 import { SocketManager } from '../managers/SocketManager.js';
 import { WebRTCManager } from '../managers/WebRTCManager.js';
 import { MapEditor } from '../MapEditor.js';
+import { PiPManager } from '../PiPManager.js';
 
 // Avatars sit at layer 0 (depth ~LAYER_BASE). Objects render at
 // LAYER_BASE + layer + foot-based y-sort, so an object's `layer` places it any
@@ -64,6 +65,8 @@ export class GameScene extends Phaser.Scene {
         };
       }
     }
+    // Floating Picture-in-Picture (5x5 area / call view) when the tab is hidden
+    this.pip = new PiPManager(this);
   }
 
   // ── world ─────────────────────────────────────────────────────────────────
@@ -768,5 +771,6 @@ export class GameScene extends Phaser.Scene {
     this.webRTC?.destroy();
     this._zoomWidget?.remove();
     this.mapEditor?.destroy();
+    this.pip?.destroy();
   }
 }

@@ -1245,6 +1245,18 @@ export class WebRTCManager {
     return Array.from(this.peers.values()).some(p => p.dc?.readyState === 'open');
   }
 
+  // Remote participants currently in the call, for the PiP "call view".
+  // Returns the live <video> element (camera or placeholder) plus a label.
+  getCallVideos() {
+    const out = [];
+    this.peers.forEach((p, id) => {
+      if (p.stream && p.filmTile?.video) {
+        out.push({ video: p.filmTile.video, name: this.peerNames.get(id) || 'Player', videoHidden: !!p.remoteVideoHidden });
+      }
+    });
+    return out;
+  }
+
   _updatePanelMode() {
     // The ephemeral "area" chat is shown whenever you're in a private zone OR
     // near someone; otherwise the panel is the online/DM view.
