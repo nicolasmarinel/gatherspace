@@ -3,14 +3,16 @@
 // video. A canvas is fed to a <video> via captureStream, and that video is what
 // enters PiP (so its content can switch live between minimap and call).
 //
-// Entering PiP requires a user activation, and switching tabs is NOT one — so a
-// naive visibilitychange handler only works right after a gesture (e.g. moving
-// the avatar). The reliable, gesture-free path (the one Google Meet uses) is the
-// Media Session "enterpictureinpicture" action: Chrome auto-invokes it on
-// tab-switch for pages with active camera/mic capture (we hold a local stream
-// the whole session) and supplies the activation itself. For that to succeed the
-// request must be synchronous on an already-playing, already-ready video, so we
-// keep one persistent pipeline alive and continuously drawn.
+// Entering PiP requires a user activation, and switching tabs is NOT one — so
+// the request only succeeds when activation is still live (a gesture within the
+// last few seconds, e.g. moving the avatar before switching away). We keep one
+// persistent pipeline alive and continuously drawn so the capture stream never
+// stalls and the video is always ready for an instant, synchronous request.
+//
+// (The Media Session "enterpictureinpicture" action would allow gesture-free
+// auto-PiP, but it triggers Chrome's "Automatic Picture-in-Picture" permission
+// and its own auto-PiP logic, which proved unpredictable — wrong video / wrong
+// size / broken re-entry — so we don't use it.)
 
 const SIZE = 320;        // PiP canvas px (square)
 const WINDOW_TILES = 5;  // 5x5 tiles around the avatar
@@ -44,13 +46,6 @@ export class PiPManager {
     // If the browser ever pauses it, resume so it's ready next switch.
     this.video.addEventListener('pause', () => { const r = this.video?.play(); if (r?.catch) r.catch(() => {}); });
 
-    // Primary, gesture-free path: browser-invoked on tab-switch for capture pages
-    if ('mediaSession' in navigator && navigator.mediaSession.setActionHandler) {
-      try { navigator.mediaSession.setActionHandler('enterpictureinpicture', () => this._requestPiP()); } catch { /* unsupported action */ }
-    }
-
-    // Fallback / exit. The hidden request only succeeds when activation is still
-    // live (recent gesture), but it's harmless otherwise and pairs with exit.
     this._onVis = () => { if (document.hidden) this._requestPiP(); else this._exitPiP(); };
     document.addEventListener('visibilitychange', this._onVis);
   }
@@ -162,7 +157,6 @@ export class PiPManager {
   destroy() {
     if (this._onVis) document.removeEventListener('visibilitychange', this._onVis);
     if (this._timer) clearInterval(this._timer);
-    try { navigator.mediaSession?.setActionHandler?.('enterpictureinpicture', null); } catch { /* ignore */ }
     this._exitPiP();
     if (this.video) {
       try { this.video.srcObject?.getTracks?.().forEach(t => t.stop()); } catch { /* ignore */ }
