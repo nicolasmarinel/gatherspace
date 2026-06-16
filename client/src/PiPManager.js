@@ -6,17 +6,18 @@
 // Entering PiP requires a user activation, and switching tabs is NOT one. Two
 // entry points cover this:
 //   1. The bottom-bar toggle button — a real gesture, so it always works.
-//   2. The Media Session "enterpictureinpicture" action — Chrome invokes it
-//      gesture-free on tab-switch for pages with active camera/mic capture (we
-//      hold the local stream all session) and supplies activation itself. This
-//      is the only auto-enter path (no visibilitychange-enter, so the two can't
-//      race); visibilitychange only handles exit on return. Because every other
-//      <video> on the page is marked disablePictureInPicture, the action can
-//      only ever target our canvas video — no wrong-video / oversized window.
+//   2. The `autoPictureInPicture` attribute on our canvas video — the browser
+//      itself auto-ENTERS PiP for this exact video when the tab hides and
+//      auto-EXITS when it shows, gesture-free, re-firing on every switch. Because
+//      it names a specific element, Chrome can't grab the camera/call video
+//      (those are also marked disablePictureInPicture), so the window is always
+//      our 320x320 canvas — no wrong-video / oversized window, and no reliance on
+//      our own visibilitychange detection. Requires the one-time "Automatic
+//      Picture-in-Picture" permission.
 //
-// The request must be synchronous on an already-ready video, so we keep one
-// persistent pipeline alive and continuously drawn (which also keeps the
-// capture stream from stalling).
+// We keep one persistent pipeline alive and continuously drawn so the video is
+// always playing+ready (a prerequisite for auto-PiP) and the capture stream
+// never stalls. visibilitychange is only a belt-and-suspenders exit.
 
 const SIZE = 320;        // PiP canvas px (square)
 const WINDOW_TILES = 5;  // 5x5 tiles around the avatar
@@ -37,26 +38,23 @@ export class PiPManager {
     this.video = document.createElement('video');
     this.video.muted = true;
     this.video.playsInline = true;
+    // Browser auto-enters/exits PiP for THIS specific video on tab switch.
+    this.video.autoPictureInPicture = true;
+    try { this.video.setAttribute('autopictureinpicture', ''); } catch { /* older syntax */ }
     this.video.style.cssText = 'position:fixed; left:-9999px; width:2px; height:2px; opacity:0; pointer-events:none;';
     try { this.video.srcObject = this.canvas.captureStream(30); }
     catch { this._unsupported = true; return; }
     document.body.appendChild(this.video);
 
     // Keep the canvas continuously drawn so the capture stream never stalls and
-    // the video stays ready+playing for an instant, synchronous PiP request.
+    // the video stays ready+playing (a prerequisite for auto-PiP).
     this._draw();
     this._timer = setInterval(() => this._draw(), 66); // ~15fps
     const p = this.video.play(); if (p?.catch) p.catch(() => {});
     // If the browser ever pauses it, resume so it's ready next switch.
     this.video.addEventListener('pause', () => { const r = this.video?.play(); if (r?.catch) r.catch(() => {}); });
 
-    // Auto-enter: browser-invoked on tab-switch for capture pages (gesture-free)
-    if ('mediaSession' in navigator && navigator.mediaSession.setActionHandler) {
-      try { navigator.mediaSession.setActionHandler('enterpictureinpicture', () => this._requestPiP()); } catch { /* unsupported action */ }
-    }
-
-    // visibilitychange handles EXIT only — keeping enter out of here avoids
-    // racing the action handler above.
+    // Belt-and-suspenders exit (the attribute already auto-exits on return).
     this._onVis = () => { if (!document.hidden) this._exitPiP(); };
     document.addEventListener('visibilitychange', this._onVis);
   }
@@ -177,7 +175,6 @@ export class PiPManager {
   destroy() {
     if (this._onVis) document.removeEventListener('visibilitychange', this._onVis);
     if (this._timer) clearInterval(this._timer);
-    try { navigator.mediaSession?.setActionHandler?.('enterpictureinpicture', null); } catch { /* ignore */ }
     this._exitPiP();
     if (this.video) {
       try { this.video.srcObject?.getTracks?.().forEach(t => t.stop()); } catch { /* ignore */ }
