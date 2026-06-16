@@ -3,21 +3,21 @@
 // video. A canvas is fed to a <video> via captureStream, and that video is what
 // enters PiP (so its content can switch live between minimap and call).
 //
-// Entering PiP requires a user activation, and switching tabs is NOT one. Two
-// entry points cover this:
-//   1. The bottom-bar toggle button — a real gesture, so it always works.
-//   2. The `autoPictureInPicture` attribute on our canvas video — the browser
-//      itself auto-ENTERS PiP for this exact video when the tab hides and
-//      auto-EXITS when it shows, gesture-free, re-firing on every switch. Because
-//      it names a specific element, Chrome can't grab the camera/call video
-//      (those are also marked disablePictureInPicture), so the window is always
-//      our 320x320 canvas — no wrong-video / oversized window, and no reliance on
-//      our own visibilitychange detection. Requires the one-time "Automatic
-//      Picture-in-Picture" permission.
+// Entering PiP requires a user activation, and switching tabs is NOT one, so
+// the browser's gesture-free auto-PiP paths proved unreliable. Instead:
+//   1. The bottom-bar toggle button — a real gesture, so it always works. In
+//      this manual mode PiP closes again when you return to the tab.
+//   2. An opt-in "Enable PiP" setting. While on, we press the PiP button for the
+//      user whenever the GatherSpace tab is focused (and on their next gesture,
+//      since a bare focus carries no activation). PiP then stays open as you
+//      switch away — that's the whole point — and is re-armed each time you come
+//      back. The trade-off is that the window also floats while the tab is
+//      focused.
 //
 // We keep one persistent pipeline alive and continuously drawn so the video is
-// always playing+ready (a prerequisite for auto-PiP) and the capture stream
-// never stalls. visibilitychange is only a belt-and-suspenders exit.
+// always playing+ready for an instant request and the capture stream never
+// stalls. Every other <video> is disablePictureInPicture, so only our 320x320
+// canvas can ever PiP (correct size, correct content).
 
 const SIZE = 320;        // PiP canvas px (square)
 const WINDOW_TILES = 5;  // 5x5 tiles around the avatar
@@ -25,6 +25,8 @@ const WINDOW_TILES = 5;  // 5x5 tiles around the avatar
 export class PiPManager {
   constructor(scene) {
     this.scene = scene;
+    this._autoEnable = localStorage.getItem('gs-pip-auto') === '1';
+    this._gestureArmed = false;
 
     if (!('pictureInPictureEnabled' in document) || !document.pictureInPictureEnabled) {
       this._unsupported = true;
@@ -38,9 +40,6 @@ export class PiPManager {
     this.video = document.createElement('video');
     this.video.muted = true;
     this.video.playsInline = true;
-    // Browser auto-enters/exits PiP for THIS specific video on tab switch.
-    this.video.autoPictureInPicture = true;
-    try { this.video.setAttribute('autopictureinpicture', ''); } catch { /* older syntax */ }
     this.video.style.cssText = 'position:fixed; left:-9999px; width:2px; height:2px; opacity:0; pointer-events:none;';
     try { this.video.srcObject = this.canvas.captureStream(30); }
     catch { this._unsupported = true; return; }
@@ -54,9 +53,15 @@ export class PiPManager {
     // If the browser ever pauses it, resume so it's ready next switch.
     this.video.addEventListener('pause', () => { const r = this.video?.play(); if (r?.catch) r.catch(() => {}); });
 
-    // Belt-and-suspenders exit (the attribute already auto-exits on return).
-    this._onVis = () => { if (!document.hidden) this._exitPiP(); };
-    document.addEventListener('visibilitychange', this._onVis);
+    // When the tab is shown: in manual mode, close PiP (you're back); in
+    // auto mode, (re)open it so it'll be showing the next time you switch away.
+    this._onShown = () => {
+      if (document.hidden) return;
+      if (this._autoEnable) { this._requestPiP(); this._armGesture(); }
+      else this._exitPiP();
+    };
+    document.addEventListener('visibilitychange', this._onShown);
+    window.addEventListener('focus', this._onShown);
   }
 
   // Manual toggle (from the bottom-bar button). The click is a user gesture, so
@@ -66,6 +71,29 @@ export class PiPManager {
     if (document.pictureInPictureElement === this.video) this._exitPiP();
     else this._requestPiP();
     return true;
+  }
+
+  getAutoEnable() { return this._autoEnable; }
+
+  setAutoEnable(on) {
+    this._autoEnable = !!on;
+    localStorage.setItem('gs-pip-auto', on ? '1' : '0');
+    if (on && !document.hidden) { this._requestPiP(); this._armGesture(); }
+  }
+
+  // A bare focus/visibility change carries no user activation, so also fire on
+  // the user's next gesture while the tab is focused (e.g. moving the avatar).
+  _armGesture() {
+    if (this._gestureArmed || this._unsupported) return;
+    this._gestureArmed = true;
+    const fire = () => {
+      this._gestureArmed = false;
+      window.removeEventListener('pointerdown', fire, true);
+      window.removeEventListener('keydown', fire, true);
+      if (this._autoEnable && !document.hidden) this._requestPiP();
+    };
+    window.addEventListener('pointerdown', fire, true);
+    window.addEventListener('keydown', fire, true);
   }
 
   _requestPiP() {
@@ -173,7 +201,10 @@ export class PiPManager {
   }
 
   destroy() {
-    if (this._onVis) document.removeEventListener('visibilitychange', this._onVis);
+    if (this._onShown) {
+      document.removeEventListener('visibilitychange', this._onShown);
+      window.removeEventListener('focus', this._onShown);
+    }
     if (this._timer) clearInterval(this._timer);
     this._exitPiP();
     if (this.video) {

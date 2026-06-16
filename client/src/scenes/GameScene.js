@@ -69,6 +69,7 @@ export class GameScene extends Phaser.Scene {
     this.pip = new PiPManager(this);
     if (this.webRTC) {
       this.webRTC.onTogglePiP = () => this.pip?.toggle();
+      this.webRTC.onSetPiPAuto = (on) => this.pip?.setAutoEnable(on);
       if (this.pip?._unsupported) this.webRTC.hidePiPButton?.();
     }
   }

@@ -41,6 +41,7 @@ export class WebRTCManager {
     this.onEditMap = null;       // set by the scene to toggle the map editor
     this.onToggleZoneLock = null; // set by the scene to lock/unlock the current zone
     this.onTogglePiP = null;     // set by the scene to toggle Picture-in-Picture
+    this.onSetPiPAuto = null;    // set by the scene; (on) => auto-enter PiP on focus
     // Presence + direct messages
     this._presence = [];                  // [{ email, name, picture, online }]
     this._dmThreads = new Map();          // peerEmail -> [{ from, text, ts }]
@@ -983,6 +984,16 @@ export class WebRTCManager {
     const spNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
     spNote.textContent = 'Boosts and evens out incoming audio so quiet talkers are easier to hear. Adjust individual people with the volume slider on their tile in the call view.';
 
+    // Picture-in-Picture section
+    const pipLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
+    pipLabel.textContent = 'PICTURE-IN-PICTURE';
+    const pipAuto = localStorage.getItem('gs-pip-auto') === '1';
+    const pipRow = this._toggleRadios('gs-pip-auto',
+      'Enable PiP (Picture-in-Picture)', 'Disable PiP',
+      pipAuto, (on) => this._setPiPAuto(on));
+    const pipNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
+    pipNote.textContent = 'When enabled, the floating Picture-in-Picture window opens automatically whenever you focus GatherSpace, so it stays visible after you switch to another tab. You can also open it any time with the PiP button in the bottom bar.';
+
     panel.append(
       titleRow,
       sectionLabel, options, note,
@@ -990,6 +1001,7 @@ export class WebRTCManager {
       bwLabel, bwOptions, bwNote,
       nsLabel, micSelect, nsOptions, nsNote,
       spLabel, maxRow, spNote,
+      pipLabel, pipRow, pipNote,
     );
     modal.appendChild(panel);
     document.body.appendChild(modal);
@@ -1006,6 +1018,11 @@ export class WebRTCManager {
       mode === 'reduced' ? '📉 Reduced bandwidth mode' : '📈 Enhanced quality mode',
       '#86efac'
     );
+  }
+
+  _setPiPAuto(on) {
+    localStorage.setItem('gs-pip-auto', on ? '1' : '0');
+    this.onSetPiPAuto?.(on);
   }
 
   _closeSettings() {
