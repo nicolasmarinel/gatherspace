@@ -1,7 +1,12 @@
 // Picture-in-Picture: when the tab is hidden, float a small window showing the
 // 5x5-tile area around the local avatar — or, if a call is active, the call's
-// video. One canvas is fed to a hidden <video> via captureStream, and that
-// single video is what enters PiP (so its content can switch live).
+// video. A canvas is fed to a <video> via captureStream, and that video is what
+// enters PiP (so its content can switch live between minimap and call).
+//
+// The whole pipeline (video + capture stream + render timer) is created fresh on
+// every entry and fully torn down on exit. Reusing one stream across tab
+// switches makes Chrome refuse to re-enter PiP after the first cycle (the canvas
+// goes idle while the tab is visible and the capture track stalls).
 //
 // Background note: hidden tabs pause requestAnimationFrame, but pages with an
 // active mic/camera (this app) are exempt from background timer throttling, so
@@ -15,6 +20,7 @@ export class PiPManager {
     this.scene = scene;
     this._active = false;
     this._timer = null;
+    this.video = null;
 
     if (!('pictureInPictureEnabled' in document) || !document.pictureInPictureEnabled) {
       this._unsupported = true;
@@ -25,43 +31,63 @@ export class PiPManager {
     this.canvas.width = SIZE; this.canvas.height = SIZE;
     this.ctx = this.canvas.getContext('2d');
 
-    this.video = document.createElement('video');
-    this.video.muted = true;
-    this.video.playsInline = true;
-    this.video.style.cssText = 'position:fixed; left:-9999px; width:2px; height:2px; opacity:0; pointer-events:none;';
-    try { this.video.srcObject = this.canvas.captureStream(30); } catch { this._unsupported = true; return; }
-    document.body.appendChild(this.video);
-
     this._onVis = () => { if (document.hidden) this._enter(); else this._exit(); };
     document.addEventListener('visibilitychange', this._onVis);
-    this._onLeave = () => { if (this._timer) { clearInterval(this._timer); this._timer = null; } this._active = false; };
-    this.video.addEventListener('leavepictureinpicture', this._onLeave);
   }
 
   async _enter() {
     if (this._unsupported || this._active) return;
     this._active = true;
-    this._draw();                                   // first frame before requesting PiP
+
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.style.cssText = 'position:fixed; left:-9999px; width:2px; height:2px; opacity:0; pointer-events:none;';
+    try { video.srcObject = this.canvas.captureStream(30); }
+    catch { this._active = false; return; }
+    document.body.appendChild(video);
+    // If the user closes the PiP window manually, fully reset so the next switch works
+    video.addEventListener('leavepictureinpicture', () => this._teardown(), { once: true });
+    this.video = video;
+
+    this._draw();                                      // first frame before requesting PiP
     this._timer = setInterval(() => this._draw(), 66); // ~15fps
-    try { await this.video.play(); } catch { /* autoplay edge */ }
-    if (this.video.readyState < 1) {
+
+    try { await video.play(); } catch { /* autoplay edge */ }
+    if (video.readyState < 1) {
       await new Promise((res) => {
         const t = setTimeout(res, 300);
-        this.video.addEventListener('loadedmetadata', () => { clearTimeout(t); res(); }, { once: true });
+        video.addEventListener('loadedmetadata', () => { clearTimeout(t); res(); }, { once: true });
       });
     }
-    if (!document.hidden || !this._active) return;  // returned to the tab mid-setup
+    // Bail if we were torn down or the user returned during setup
+    if (!this._active || this.video !== video || !document.hidden) return;
     try {
-      if (document.pictureInPictureElement !== this.video) await this.video.requestPictureInPicture();
+      if (document.pictureInPictureElement !== video) await video.requestPictureInPicture();
     } catch { /* needs gesture / not permitted — leave the canvas warm anyway */ }
   }
 
   async _exit() {
+    if (this._active && this.video) {
+      try {
+        if (document.pictureInPictureElement === this.video) await document.exitPictureInPicture();
+      } catch { /* ignore */ }
+    }
+    this._teardown();
+  }
+
+  // Stop the render loop and dispose of the capture stream + video element.
+  _teardown() {
     this._active = false;
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
-    try {
-      if (document.pictureInPictureElement === this.video) await document.exitPictureInPicture();
-    } catch { /* ignore */ }
+    const v = this.video;
+    this.video = null;
+    if (v) {
+      try { v.srcObject?.getTracks?.().forEach(t => t.stop()); } catch { /* ignore */ }
+      try { v.pause(); } catch { /* ignore */ }
+      v.srcObject = null;
+      v.remove();
+    }
   }
 
   _draw() {
@@ -108,7 +134,6 @@ export class PiPManager {
     this.scene.remotePlayers?.forEach(rp => drawAvatar(rp.sprite, rp.targetX ?? rp.sprite.x, rp.targetY ?? rp.sprite.y));
     drawAvatar(lp.sprite, cx, cy);
 
-    // Frame + label
     ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 3;
     ctx.strokeRect(1.5, 1.5, SIZE - 3, SIZE - 3);
   }
@@ -155,8 +180,6 @@ export class PiPManager {
 
   destroy() {
     if (this._onVis) document.removeEventListener('visibilitychange', this._onVis);
-    if (this._timer) clearInterval(this._timer);
     this._exit();
-    this.video?.remove();
   }
 }
