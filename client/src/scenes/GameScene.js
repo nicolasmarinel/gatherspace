@@ -67,6 +67,10 @@ export class GameScene extends Phaser.Scene {
     }
     // Floating Picture-in-Picture (5x5 area / call view) when the tab is hidden
     this.pip = new PiPManager(this);
+    if (this.webRTC) {
+      this.webRTC.onTogglePiP = () => this.pip?.toggle();
+      if (this.pip?._unsupported) this.webRTC.hidePiPButton?.();
+    }
   }
 
   // ── world ─────────────────────────────────────────────────────────────────

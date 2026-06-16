@@ -40,6 +40,7 @@ export class WebRTCManager {
     this.localProfile = { name: localName, email: profile.email || null, picture: profile.picture || null };
     this.onEditMap = null;       // set by the scene to toggle the map editor
     this.onToggleZoneLock = null; // set by the scene to lock/unlock the current zone
+    this.onTogglePiP = null;     // set by the scene to toggle Picture-in-Picture
     // Presence + direct messages
     this._presence = [];                  // [{ email, name, picture, online }]
     this._dmThreads = new Map();          // peerEmail -> [{ from, text, ts }]
@@ -130,11 +131,12 @@ export class WebRTCManager {
 
     const spacer = mk('div', 'flex:1;');
 
-    // Right (right-aligned): hammer then messages, so messages is right-most
+    // Right (right-aligned): PiP, hammer, then messages (right-most)
+    this._pipBarBtn = this._ctrlBtn('picture_in_picture_alt', 'Picture-in-Picture', '', () => this.onTogglePiP?.());
     this._editBarBtn = this._ctrlBtn('hardware', 'Edit map', '', () => this.onEditMap?.());
     this._dmBarBtn = this._ctrlBtn('chat_bubble', 'Messages', '', () => this._openMessages());
 
-    this._bar.append(...left, spacer, this._editBarBtn, this._dmBarBtn);
+    this._bar.append(...left, spacer, this._pipBarBtn, this._editBarBtn, this._dmBarBtn);
     document.body.appendChild(this._bar);
 
     // Status badge — top-right
@@ -192,6 +194,7 @@ export class WebRTCManager {
     video.autoplay = true;
     video.playsInline = true;
     video.muted = true; // audio is handled by a separate <audio> el
+    video.disablePictureInPicture = true; // only the PiP manager's canvas video may PiP
     // contain + black fill: always show the whole frame, never crop/reframe
     video.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;display:block;';
     if (stream) video.srcObject = stream;
@@ -208,6 +211,8 @@ export class WebRTCManager {
     wrapper.addEventListener('click', () => this._openExpanded());
     return { wrapper, video };
   }
+
+  hidePiPButton() { if (this._pipBarBtn) this._pipBarBtn.style.display = 'none'; }
 
   // ── control button factory ────────────────────────────────────────────────
 
@@ -643,6 +648,7 @@ export class WebRTCManager {
   _makeExpVideo(stream) {
     const vid = document.createElement('video');
     vid.autoplay = true; vid.playsInline = true; vid.muted = true;
+    vid.disablePictureInPicture = true;
     vid.srcObject = stream;
     vid.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;display:block;';
     return vid;

@@ -50,6 +50,15 @@ export class PiPManager {
     document.addEventListener('visibilitychange', this._onVis);
   }
 
+  // Manual toggle (from the bottom-bar button). The click is a user gesture, so
+  // this entry always works regardless of activation state.
+  toggle() {
+    if (this._unsupported) { return false; }
+    if (document.pictureInPictureElement === this.video) this._exitPiP();
+    else this._requestPiP();
+    return true;
+  }
+
   _requestPiP() {
     const v = this.video;
     if (this._unsupported || !v) return;
