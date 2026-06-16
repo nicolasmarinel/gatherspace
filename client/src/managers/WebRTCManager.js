@@ -132,12 +132,13 @@ export class WebRTCManager {
 
     const spacer = mk('div', 'flex:1;');
 
-    // Right (right-aligned): PiP, hammer, then messages (right-most)
-    this._pipBarBtn = this._ctrlBtn('picture_in_picture_alt', 'Picture-in-Picture', '', () => this.onTogglePiP?.());
+    // Right (right-aligned): hammer then messages (right-most)
+    // PiP button disabled in deployment (kept for future use):
+    // this._pipBarBtn = this._ctrlBtn('picture_in_picture_alt', 'Picture-in-Picture', '', () => this.onTogglePiP?.());
     this._editBarBtn = this._ctrlBtn('hardware', 'Edit map', '', () => this.onEditMap?.());
     this._dmBarBtn = this._ctrlBtn('chat_bubble', 'Messages', '', () => this._openMessages());
 
-    this._bar.append(...left, spacer, this._pipBarBtn, this._editBarBtn, this._dmBarBtn);
+    this._bar.append(...left, spacer, this._editBarBtn, this._dmBarBtn);
     document.body.appendChild(this._bar);
 
     // Status badge — top-right
@@ -984,15 +985,15 @@ export class WebRTCManager {
     const spNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
     spNote.textContent = 'Boosts and evens out incoming audio so quiet talkers are easier to hear. Adjust individual people with the volume slider on their tile in the call view.';
 
-    // Picture-in-Picture section
-    const pipLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
-    pipLabel.textContent = 'PICTURE-IN-PICTURE';
-    const pipAuto = localStorage.getItem('gs-pip-auto') === '1';
-    const pipRow = this._toggleRadios('gs-pip-auto',
-      'Enable PiP (Picture-in-Picture)', 'Disable PiP',
-      pipAuto, (on) => this._setPiPAuto(on));
-    const pipNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
-    pipNote.textContent = 'When enabled, the floating Picture-in-Picture window opens automatically whenever you focus GatherSpace, so it stays visible after you switch to another tab. You can also open it any time with the PiP button in the bottom bar.';
+    // Picture-in-Picture section disabled in deployment (kept for future use):
+    // const pipLabel = mk('div', 'font-size:11px;color:#64748b;letter-spacing:.05em;margin:22px 0 10px;');
+    // pipLabel.textContent = 'PICTURE-IN-PICTURE';
+    // const pipAuto = localStorage.getItem('gs-pip-auto') === '1';
+    // const pipRow = this._toggleRadios('gs-pip-auto',
+    //   'Enable PiP (Picture-in-Picture)', 'Disable PiP',
+    //   pipAuto, (on) => this._setPiPAuto(on));
+    // const pipNote = mk('div', 'font-size:11px;color:#475569;margin-top:14px;line-height:1.5;');
+    // pipNote.textContent = 'When enabled, the floating Picture-in-Picture window opens automatically whenever you focus GatherSpace, so it stays visible after you switch to another tab. You can also open it any time with the PiP button in the bottom bar.';
 
     panel.append(
       titleRow,
@@ -1001,7 +1002,6 @@ export class WebRTCManager {
       bwLabel, bwOptions, bwNote,
       nsLabel, micSelect, nsOptions, nsNote,
       spLabel, maxRow, spNote,
-      pipLabel, pipRow, pipNote,
     );
     modal.appendChild(panel);
     document.body.appendChild(modal);

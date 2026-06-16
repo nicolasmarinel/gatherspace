@@ -5,7 +5,7 @@ import { RemotePlayer } from '../objects/RemotePlayer.js';
 import { SocketManager } from '../managers/SocketManager.js';
 import { WebRTCManager } from '../managers/WebRTCManager.js';
 import { MapEditor } from '../MapEditor.js';
-import { PiPManager } from '../PiPManager.js';
+// import { PiPManager } from '../PiPManager.js'; // PiP disabled in deployment (kept for future use)
 
 // Avatars sit at layer 0 (depth ~LAYER_BASE). Objects render at
 // LAYER_BASE + layer + foot-based y-sort, so an object's `layer` places it any
@@ -65,13 +65,15 @@ export class GameScene extends Phaser.Scene {
         };
       }
     }
-    // Floating Picture-in-Picture (5x5 area / call view) when the tab is hidden
-    this.pip = new PiPManager(this);
-    if (this.webRTC) {
-      this.webRTC.onTogglePiP = () => this.pip?.toggle();
-      this.webRTC.onSetPiPAuto = (on) => this.pip?.setAutoEnable(on);
-      if (this.pip?._unsupported) this.webRTC.hidePiPButton?.();
-    }
+    // Picture-in-Picture is disabled in deployment (kept for possible future use).
+    // To re-enable: uncomment the wiring below, the PiP button in WebRTCManager's
+    // bar, and the "Enable PiP" Settings section.
+    // this.pip = new PiPManager(this);
+    // if (this.webRTC) {
+    //   this.webRTC.onTogglePiP = () => this.pip?.toggle();
+    //   this.webRTC.onSetPiPAuto = (on) => this.pip?.setAutoEnable(on);
+    //   if (this.pip?._unsupported) this.webRTC.hidePiPButton?.();
+    // }
   }
 
   // ── world ─────────────────────────────────────────────────────────────────
