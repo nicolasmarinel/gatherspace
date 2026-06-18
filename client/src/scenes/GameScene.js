@@ -575,6 +575,12 @@ export class GameScene extends Phaser.Scene {
       fontSize: '13px', color: '#86efac', fontFamily: 'monospace',
       backgroundColor: '#1a202ccc', padding: { x: 8, y: 4 }
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
+
+    // Wave banner — shown just above the bottom toolbar when someone waves at us
+    this._waveNotice = this.add.text(this.scale.width / 2, this.scale.height - 112, '', {
+      fontSize: '15px', color: '#fde68a', fontFamily: 'monospace',
+      backgroundColor: '#1a202cee', padding: { x: 12, y: 6 },
+    }).setOrigin(0.5, 1).setScrollFactor(0).setDepth(11).setVisible(false);
   }
 
   _setupKeys() {
@@ -600,6 +606,61 @@ export class GameScene extends Phaser.Scene {
       const ae = document.activeElement;
       if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
     });
+
+    // Right-click another avatar → "Wave to [name]" context menu
+    this.input.mouse?.disableContextMenu();
+    this.input.on('pointerdown', (pointer) => {
+      if (!pointer.rightButtonDown()) return;
+      if (this.mapEditor?.active) return;
+      const rp = this._remotePlayerAt(pointer.worldX, pointer.worldY);
+      if (rp) this._showWaveMenu(pointer, rp);
+      else this._hideWaveMenu();
+    });
+  }
+
+  // Topmost remote avatar whose sprite bounds contain the world point (if any)
+  _remotePlayerAt(wx, wy) {
+    let found = null;
+    this.remotePlayers.forEach(rp => {
+      if (Phaser.Geom.Rectangle.Contains(rp.sprite.getBounds(), wx, wy)) found = rp;
+    });
+    return found;
+  }
+
+  _showWaveMenu(pointer, rp) {
+    this._hideWaveMenu();
+    const menu = document.createElement('div');
+    menu.style.cssText = `position:fixed; z-index:250; left:${pointer.x}px; top:${pointer.y}px;
+      background:#1e293b; border:1px solid #334155; border-radius:8px; padding:4px;
+      font-family:monospace; box-shadow:0 6px 20px #000a;`;
+    const btn = document.createElement('button');
+    btn.textContent = `👋 Wave to ${rp.name}`;
+    btn.style.cssText = `background:none; border:none; color:#e2e8f0; cursor:pointer;
+      font-size:13px; padding:8px 12px; border-radius:6px; white-space:nowrap; width:100%; text-align:left;`;
+    btn.addEventListener('mouseenter', () => btn.style.background = '#334155');
+    btn.addEventListener('mouseleave', () => btn.style.background = 'none');
+    btn.addEventListener('click', () => { this.socket?.sendWave(rp.id); this._hideWaveMenu(); });
+    menu.appendChild(btn);
+    document.body.appendChild(menu);
+    this._waveMenu = menu;
+
+    // Clamp inside the viewport
+    const r = menu.getBoundingClientRect();
+    if (r.right > window.innerWidth)  menu.style.left = `${window.innerWidth - r.width - 6}px`;
+    if (r.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - r.height - 6}px`;
+
+    // Dismiss on the next interaction outside the menu
+    this._waveMenuDismiss = (e) => { if (this._waveMenu && !this._waveMenu.contains(e.target)) this._hideWaveMenu(); };
+    setTimeout(() => window.addEventListener('pointerdown', this._waveMenuDismiss, true), 0);
+  }
+
+  _hideWaveMenu() {
+    if (this._waveMenuDismiss) {
+      window.removeEventListener('pointerdown', this._waveMenuDismiss, true);
+      this._waveMenuDismiss = null;
+    }
+    this._waveMenu?.remove();
+    this._waveMenu = null;
   }
 
   _setupJoystick() {
@@ -710,6 +771,8 @@ export class GameScene extends Phaser.Scene {
       rp.sprite.setDepth(LAYER_BASE + (rp.sprite.y + rp.sprite.height / 2) / FOOT_DIV);
       rp.nameTag.setDepth(NAME_DEPTH);
     });
+
+    this._updateWaveEmojis();
   }
 
   _checkProximity(localZone = this._zoneAt(this.localPlayer.sprite.x, this.localPlayer.sprite.y)) {
@@ -765,6 +828,46 @@ export class GameScene extends Phaser.Scene {
     document.body.appendChild(el);
   }
 
+  // ── waves ─────────────────────────────────────────────────────────────────
+
+  onWaved({ fromName, targetId }) {
+    this._showWaveEmoji(targetId);
+    if (targetId === this.socket?.id) {
+      this._showWaveNotice(fromName);              // in-map banner
+      this.webRTC?.notifyWave(fromName);           // OS notification + chime
+    }
+  }
+
+  // Hand-wave emoji that follows the target avatar's head for ~2 seconds
+  _showWaveEmoji(targetId) {
+    const sprite = targetId === this.socket?.id
+      ? this.localPlayer?.sprite
+      : this.remotePlayers.get(targetId)?.sprite;
+    if (!sprite) return;
+    const txt = this.add.text(sprite.x, sprite.y - 60, '👋', { fontSize: '30px' })
+      .setOrigin(0.5, 1).setDepth(NAME_DEPTH + 0.1);
+    (this._waveEmojis ||= []).push({ txt, sprite });
+    this.time.delayedCall(2000, () => {
+      const i = this._waveEmojis.findIndex(w => w.txt === txt);
+      if (i >= 0) this._waveEmojis.splice(i, 1);
+      txt.destroy();
+    });
+  }
+
+  // Keep each wave emoji above its avatar's head, with a gentle bob
+  _updateWaveEmojis() {
+    if (!this._waveEmojis?.length) return;
+    const bob = Math.sin(this.time.now / 150) * 3;
+    this._waveEmojis.forEach(w => w.txt.setPosition(w.sprite.x, w.sprite.y - 60 + bob));
+  }
+
+  _showWaveNotice(fromName) {
+    if (!this._waveNotice) return;
+    this._waveNotice.setText(`👋 ${fromName} is waving at you!`).setVisible(true);
+    this._waveNoticeTimer?.remove();
+    this._waveNoticeTimer = this.time.delayedCall(4000, () => this._waveNotice.setVisible(false));
+  }
+
   // Called by SocketManager when the socket reconnects with a new ID.
   // Clears stale remote-player state; room-state from the server re-populates it.
   onSocketReconnect() {
@@ -779,5 +882,7 @@ export class GameScene extends Phaser.Scene {
     this._zoomWidget?.remove();
     this.mapEditor?.destroy();
     this.pip?.destroy();
+    this._hideWaveMenu();
+    this._waveEmojis?.forEach(w => w.txt.destroy());
   }
 }

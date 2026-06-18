@@ -1505,6 +1505,44 @@ export class WebRTCManager {
     } catch { /* notifications unsupported in this context */ }
   }
 
+  // Someone waved at us: OS notification (useful when the tab is hidden) plus a
+  // chime that plays whether or not GatherSpace is the focused tab.
+  notifyWave(fromName) {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification('👋 GatherSpace', {
+          body: `${fromName} is waving at you!`,
+          tag: 'gs-wave', renotify: true,
+        });
+        n.onclick = () => { window.focus(); n.close(); };
+      } catch { /* notifications unsupported here */ }
+    }
+    this._playChime();
+  }
+
+  // Synthesized two-note chime (no audio asset needed). Works in a background tab.
+  _playChime() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = this._chimeCtx || (this._chimeCtx = new Ctx());
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      const now = ctx.currentTime;
+      [[880, 0], [1320, 0.11]].forEach(([freq, t]) => { // A5 → E6
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        osc.connect(gain); gain.connect(ctx.destination);
+        const s = now + t;
+        gain.gain.setValueAtTime(0.0001, s);
+        gain.gain.exponentialRampToValueAtTime(0.28, s + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, s + 0.5);
+        osc.start(s); osc.stop(s + 0.55);
+      });
+    } catch { /* audio blocked */ }
+  }
+
   // ── media ─────────────────────────────────────────────────────────────────
 
   async _requestMedia() {
@@ -2142,6 +2180,7 @@ export class WebRTCManager {
     this._denoiseNode?.destroy?.();
     this._audioCtx?.close?.();
     this._outCtx?.close?.();
+    this._chimeCtx?.close?.();
     this.localStream?.getTracks().forEach(t => t.stop());
     this._filmstrip?.remove();
     this._bar?.remove();

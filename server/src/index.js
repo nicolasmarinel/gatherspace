@@ -419,6 +419,15 @@ io.on('connection', (socket) => {
     if (prevZone != null && prevZone !== playerData.zone) releaseZoneIfEmpty(prevZone);
   });
 
+  // Wave at another player: tell the whole room to show the wave emoji above the
+  // target avatar; the target client also self-notifies (banner / chime / OS).
+  socket.on('wave', ({ targetId }) => {
+    if (!currentRoom || !playerData) return;
+    const room = rooms.get(currentRoom);
+    if (!room || !room.has(targetId)) return;
+    io.to(currentRoom).emit('waved', { fromId: socket.id, fromName: playerData.name, targetId });
+  });
+
   // WebRTC signaling relay — server is a pure passthrough
   socket.on('webrtc-offer',  ({ targetId, offer })     => io.to(targetId).emit('webrtc-offer',  { fromId: socket.id, offer }));
   socket.on('webrtc-answer', ({ targetId, answer })    => io.to(targetId).emit('webrtc-answer', { fromId: socket.id, answer }));
