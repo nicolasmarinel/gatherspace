@@ -191,7 +191,7 @@ export class MapEditor {
 
   enter() {
     this.active = true;
-    this.scene.cameras.main.stopFollow();
+    this.scene._beginManualPan();
     this._toggle.textContent = '✓ Done';
     this._toggle.style.background = '#14532d';
     this._bar.style.display = 'flex';
@@ -212,8 +212,7 @@ export class MapEditor {
     this._palette.style.display = 'none';
     this._overlay.clear();
     this._clearZoneLabels();
-    const lp = this.scene.localPlayer;
-    if (lp) this.scene.cameras.main.startFollow(lp.sprite, true, 0.08, 0.08);
+    this.scene._resumeFollow();
   }
 
   setMode(mode) {

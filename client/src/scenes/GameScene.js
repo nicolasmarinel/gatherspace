@@ -56,6 +56,7 @@ export class GameScene extends Phaser.Scene {
     this._setupKeys();
     this._setupJoystick();
     this._setupZoom();
+    this._setupCameraDrag();
     if (this._hasBg) {
       this.mapEditor = new MapEditor(this);
       // The bottom bar's hammer drives the editor
@@ -509,10 +510,60 @@ export class GameScene extends Phaser.Scene {
   _setupCamera() {
     this.cameras.main.setBounds(0, 0, this.mapW, this.mapH);
     this.cameras.main.startFollow(this.localPlayer.sprite, true, 0.08, 0.08);
+    this._following = true; // false while the user is free-panning the camera
     this._zoom = 1.25;
     this._zoomMin = 0.6;
     this._zoomMax = 2.5;
     this.cameras.main.setZoom(this._zoom);
+  }
+
+  // Detach the camera from the avatar so the user can look around freely.
+  _beginManualPan() {
+    if (!this._following) return;
+    this.cameras.main.stopFollow();
+    this._following = false;
+  }
+
+  // Re-attach to the avatar (called when they start moving again).
+  _resumeFollow() {
+    if (this._following || !this.localPlayer) return;
+    this.cameras.main.startFollow(this.localPlayer.sprite, true, 0.08, 0.08);
+    this._following = true;
+  }
+
+  // Drag the camera by a screen-space delta (respects zoom; bounds clamp it).
+  _panBy(dx, dy) {
+    if (dx === 0 && dy === 0) return;
+    this._beginManualPan();
+    const cam = this.cameras.main;
+    cam.scrollX -= dx / cam.zoom;
+    cam.scrollY -= dy / cam.zoom;
+  }
+
+  // Desktop: left-click drag pans the camera (right-click is reserved for waving)
+  _setupCameraDrag() {
+    this.input.on('pointerdown', (pointer) => {
+      if (this.mapEditor?.active || pointer.wasTouch) return;
+      if (pointer.rightButtonDown()) return;
+      this._mouseDrag = { x: pointer.x, y: pointer.y };
+    });
+    this.input.on('pointermove', (pointer) => {
+      if (!this._mouseDrag || this.mapEditor?.active || pointer.wasTouch) return;
+      if (!pointer.isDown) { this._mouseDrag = null; return; }
+      const dx = pointer.x - this._mouseDrag.x;
+      const dy = pointer.y - this._mouseDrag.y;
+      this._mouseDrag.x = pointer.x; this._mouseDrag.y = pointer.y;
+      this._panBy(dx, dy);
+    });
+    this.input.on('pointerup', (pointer) => {
+      if (!pointer.wasTouch) this._mouseDrag = null;
+    });
+  }
+
+  // Touch pointers currently pressed (excludes the mouse)
+  _downTouches() {
+    return [this.input.pointer1, this.input.pointer2, this.input.pointer3]
+      .filter(p => p && p.isDown && p.wasTouch);
   }
 
   // ── zoom ────────────────────────────────────────────────────────────────────
@@ -666,12 +717,34 @@ export class GameScene extends Phaser.Scene {
   _setupJoystick() {
     if (!this._isMobile) return;
 
+    this.input.addPointer(2); // need up to 3 pointers for two-finger panning
     this._joystick = { active: false, pointerId: -1, startX: 0, startY: 0, dx: 0, dy: 0 };
     this._joystickGfx = this.add.graphics().setScrollFactor(0).setDepth(50);
+    this._twoFinger = null;
+    this._tapCandidate = null;
 
     this.input.on('pointerdown', (ptr) => {
-      if (this.mapEditor?.active) return; // editor owns pointer input
-      if (!ptr.wasTouch || this._joystick.active) return;
+      if (this.mapEditor?.active || !ptr.wasTouch) return; // editor owns pointer input
+
+      // Two fingers down → free-pan the map; cancel any joystick / pending tap
+      if (this._downTouches().length >= 2) {
+        this._joystick.active = false;
+        this._joystickGfx.clear();
+        this._tapCandidate = null;
+        const [a, b] = this._downTouches();
+        this._twoFinger = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        return;
+      }
+      if (this._joystick.active) return;
+
+      // Tapping on another avatar waves at them — don't start the joystick so the
+      // avatar never drifts; a real drag cancels the tap (see pointermove).
+      const rp = this._remotePlayerAt(ptr.worldX, ptr.worldY);
+      if (rp) {
+        this._tapCandidate = { id: ptr.id, rp, x: ptr.x, y: ptr.y, t: this.time.now };
+        return;
+      }
+
       this._joystick.active = true;
       this._joystick.pointerId = ptr.id;
       this._joystick.startX = ptr.x;
@@ -681,6 +754,22 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.input.on('pointermove', (ptr) => {
+      // Two-finger pan: follow the midpoint of the two touches
+      if (this._twoFinger) {
+        const t = this._downTouches();
+        if (t.length < 2) return;
+        const [a, b] = t;
+        const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+        this._panBy(cx - this._twoFinger.x, cy - this._twoFinger.y);
+        this._twoFinger = { x: cx, y: cy };
+        return;
+      }
+      // Moved too far for a tap → it's a drag, not a wave
+      if (this._tapCandidate && ptr.id === this._tapCandidate.id) {
+        if (Math.hypot(ptr.x - this._tapCandidate.x, ptr.y - this._tapCandidate.y) > 12) {
+          this._tapCandidate = null;
+        }
+      }
       if (!this._joystick.active || ptr.id !== this._joystick.pointerId) return;
       const MAX = 60;
       const rawDx = ptr.x - this._joystick.startX;
@@ -692,11 +781,23 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.input.on('pointerup', (ptr) => {
-      if (ptr.id !== this._joystick.pointerId) return;
-      this._joystick.active = false;
-      this._joystick.dx = 0;
-      this._joystick.dy = 0;
-      this._joystickGfx.clear();
+      if (this._twoFinger && this._downTouches().length < 2) this._twoFinger = null;
+
+      // Quick tap on an avatar (little movement, short hold) → wave
+      const tc = this._tapCandidate;
+      if (tc && ptr.id === tc.id) {
+        this._tapCandidate = null;
+        if (this.time.now - tc.t < 300 && Math.hypot(ptr.x - tc.x, ptr.y - tc.y) <= 12) {
+          this.socket?.sendWave(tc.rp.id);
+        }
+      }
+
+      if (ptr.id === this._joystick.pointerId) {
+        this._joystick.active = false;
+        this._joystick.dx = 0;
+        this._joystick.dy = 0;
+        this._joystickGfx.clear();
+      }
     });
   }
 
@@ -746,6 +847,9 @@ export class GameScene extends Phaser.Scene {
       moved = this.localPlayer.update(this.cursors, this.wasd, this._getJoystickVelocity());
     }
     if (this._joystick) this._drawJoystick();
+
+    // Moving re-centers the camera on the avatar (undoes any free-pan)
+    if (moved && !this._following) this._resumeFollow();
 
     // Broadcast on movement OR any state change (direction / walking / dancing /
     // zone), so idle dances and zone crossings propagate even without movement.
