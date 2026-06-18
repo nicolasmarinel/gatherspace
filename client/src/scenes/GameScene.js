@@ -466,6 +466,7 @@ export class GameScene extends Phaser.Scene {
     const rp = new RemotePlayer(this, data.id, data.x, data.y, data.avatar ?? 0, data.name);
     rp.sessionId = data.sessionId;
     rp.zoneId = data.zone ?? null;
+    if (data.status) rp.setStatus(data.status);
     this.remotePlayers.set(data.id, rp);
   }
 
@@ -503,6 +504,21 @@ export class GameScene extends Phaser.Scene {
       const z = this._currentZoneId != null ? this._zoneById?.get(this._currentZoneId) : null;
       if (z) this.socket?.sendZoneLock(z.id, !z.locked);
     };
+    // Availability status (Available / DND)
+    this._status = 'available';
+    this.webRTC.onSetStatus = (status) => this.setStatus(status);
+  }
+
+  setStatus(status) {
+    this._status = status === 'dnd' ? 'dnd' : 'available';
+    this.localPlayer?.setStatus(this._status);
+    this.socket?.sendStatus(this._status);
+    // DND immediately tears down any active calls (proximity loop also enforces it)
+    if (this._status === 'dnd') this.remotePlayers.forEach((_, id) => this.webRTC?.closePeer(id));
+  }
+
+  updateRemoteStatus(id, status) {
+    this.remotePlayers.get(id)?.setStatus(status);
   }
 
   // ── camera ────────────────────────────────────────────────────────────────
@@ -685,12 +701,16 @@ export class GameScene extends Phaser.Scene {
       background:#1e293b; border:1px solid #334155; border-radius:8px; padding:4px;
       font-family:monospace; box-shadow:0 6px 20px #000a;`;
     const btn = document.createElement('button');
-    btn.textContent = `👋 Wave to ${rp.name}`;
-    btn.style.cssText = `background:none; border:none; color:#e2e8f0; cursor:pointer;
+    const dnd = rp.status === 'dnd';
+    btn.textContent = dnd ? `⛔ ${rp.name} is in DND` : `👋 Wave to ${rp.name}`;
+    btn.style.cssText = `background:none; border:none; cursor:${dnd ? 'default' : 'pointer'};
+      color:${dnd ? '#94a3b8' : '#e2e8f0'};
       font-size:13px; padding:8px 12px; border-radius:6px; white-space:nowrap; width:100%; text-align:left;`;
-    btn.addEventListener('mouseenter', () => btn.style.background = '#334155');
-    btn.addEventListener('mouseleave', () => btn.style.background = 'none');
-    btn.addEventListener('click', () => { this.socket?.sendWave(rp.id); this._hideWaveMenu(); });
+    if (!dnd) {
+      btn.addEventListener('mouseenter', () => btn.style.background = '#334155');
+      btn.addEventListener('mouseleave', () => btn.style.background = 'none');
+      btn.addEventListener('click', () => { this.socket?.sendWave(rp.id); this._hideWaveMenu(); });
+    }
     menu.appendChild(btn);
     document.body.appendChild(menu);
     this._waveMenu = menu;
@@ -783,12 +803,12 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerup', (ptr) => {
       if (this._twoFinger && this._downTouches().length < 2) this._twoFinger = null;
 
-      // Quick tap on an avatar (little movement, short hold) → wave
+      // Quick tap on an avatar (little movement, short hold) → open the wave menu
       const tc = this._tapCandidate;
       if (tc && ptr.id === tc.id) {
         this._tapCandidate = null;
         if (this.time.now - tc.t < 300 && Math.hypot(ptr.x - tc.x, ptr.y - tc.y) <= 12) {
-          this.socket?.sendWave(tc.rp.id);
+          this._showWaveMenu(ptr, tc.rp);
         }
       }
 
@@ -879,12 +899,26 @@ export class GameScene extends Phaser.Scene {
     this._updateWaveEmojis();
   }
 
+  // 1.0 when very close, easing to 0 by the disconnect distance
+  _proximityFactor(dist) {
+    const FULL = 80; // full volume/opacity within this radius
+    return Phaser.Math.Clamp((PROXIMITY_CLOSE_DIST - dist) / (PROXIMITY_CLOSE_DIST - FULL), 0, 1);
+  }
+
   _checkProximity(localZone = this._zoneAt(this.localPlayer.sprite.x, this.localPlayer.sprite.y)) {
     const lx = this.localPlayer.sprite.x;
     const ly = this.localPlayer.sprite.y;
     const nearby = [];
 
+    const dndSelf = this._status === 'dnd';
+
     this.remotePlayers.forEach((rp, id) => {
+      // Do Not Disturb (either side) blocks calls entirely
+      if (dndSelf || rp.status === 'dnd') {
+        this.webRTC?.closePeer(id);
+        return;
+      }
+
       // Authoritative zone the peer reported (not guessed from a lerped sprite)
       const remoteZone = rp.zoneId ?? null;
 
@@ -894,19 +928,20 @@ export class GameScene extends Phaser.Scene {
         if (localZone !== null && localZone === remoteZone) {
           nearby.push(rp.name);
           this.webRTC?.onNearby(id, rp.name);
-          this.webRTC?.setVolume(id, 1); // full volume inside a shared room
+          this.webRTC?.setProximity(id, 1); // full volume + opacity inside a shared room
         } else {
           this.webRTC?.closePeer(id);
         }
       } else {
-        // Open grounds: distance-based proximity with hysteresis
+        // Open grounds: connect within OPEN_DIST, drop beyond CLOSE_DIST, and in
+        // between fade audio + video gradually so the call eases out, not cuts.
         const dist = Phaser.Math.Distance.Between(lx, ly, rp.sprite.x, rp.sprite.y);
-        if (dist < PROXIMITY_OPEN_DIST) {
+        if (dist > PROXIMITY_CLOSE_DIST) {
+          this.webRTC?.closePeer(id);
+        } else if (dist < PROXIMITY_OPEN_DIST || this.webRTC?.hasPeer(id)) {
           nearby.push(rp.name);
           this.webRTC?.onNearby(id, rp.name);
-          this.webRTC?.setVolume(id, 1 - dist / PROXIMITY_OPEN_DIST);
-        } else if (dist > PROXIMITY_CLOSE_DIST) {
-          this.webRTC?.closePeer(id);
+          this.webRTC?.setProximity(id, this._proximityFactor(dist));
         }
       }
     });

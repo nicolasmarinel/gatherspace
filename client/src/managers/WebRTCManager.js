@@ -42,6 +42,8 @@ export class WebRTCManager {
     this.onToggleZoneLock = null; // set by the scene to lock/unlock the current zone
     this.onTogglePiP = null;     // set by the scene to toggle Picture-in-Picture
     this.onSetPiPAuto = null;    // set by the scene; (on) => auto-enter PiP on focus
+    this.onSetStatus = null;     // set by the scene; (status) => broadcast status
+    this.localStatus = 'available'; // 'available' | 'dnd' — DND blocks calls/waves
     // Presence + direct messages
     this._presence = [];                  // [{ email, name, picture, online }]
     this._dmThreads = new Map();          // peerEmail -> [{ from, text, ts }]
@@ -122,7 +124,26 @@ export class WebRTCManager {
     `);
     nameEl.textContent = this.localName;
 
-    const left = [avatar, nameEl, sep(),
+    // Availability status: Available preserves everything; DND blocks calls + waves
+    const statusSel = document.createElement('select');
+    statusSel.title = 'Availability';
+    statusSel.style.cssText = `
+      background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:8px;
+      font-family:monospace; font-size:12px; padding:4px 6px; cursor:pointer;
+    `;
+    [['available', '🟢 Available'], ['dnd', '⛔ DND']].forEach(([val, label]) => {
+      const o = document.createElement('option');
+      o.value = val; o.textContent = label;
+      statusSel.appendChild(o);
+    });
+    statusSel.value = this.localStatus;
+    statusSel.addEventListener('change', () => {
+      this.localStatus = statusSel.value === 'dnd' ? 'dnd' : 'available';
+      this.onSetStatus?.(this.localStatus);
+    });
+    this._statusSel = statusSel;
+
+    const left = [avatar, nameEl, statusSel, sep(),
       this._ctrlBtn('mic',        'Mute mic',       'mute', () => this._toggleMute()),
       this._ctrlBtn('videocam',   'Hide camera',    'cam',  () => this._toggleCam()),
       this._ctrlBtn('visibility', 'Hide self-view', 'self', () => this._toggleSelf()),
@@ -1893,6 +1914,8 @@ export class WebRTCManager {
     if (this._expandedOpen) this._buildExpandedGrid();
   }
 
+  hasPeer(peerId) { return this.peers.has(peerId); }
+
   // Proximity-driven volume (called each frame by the scene)
   setVolume(peerId, vol) {
     const peer = this.peers.get(peerId);
@@ -1900,6 +1923,16 @@ export class WebRTCManager {
     peer.proximityVol = vol;
     if (peer.gainNode) this._updatePeerGain(peer);
     else if (peer.audioEl) peer.audioEl.volume = Math.max(0, Math.min(1, vol * (peer.userGain ?? 1)));
+  }
+
+  // Distance-driven fade: audio volume + video tile opacity together, so the
+  // call eases out as people move apart instead of vanishing abruptly.
+  setProximity(peerId, factor) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return;
+    const f = Math.max(0, Math.min(1, factor));
+    this.setVolume(peerId, f);
+    if (peer.filmTile?.wrapper) peer.filmTile.wrapper.style.opacity = String(f);
   }
 
   // ── peer connections ──────────────────────────────────────────────────────
@@ -2116,6 +2149,7 @@ export class WebRTCManager {
   // ── signaling ─────────────────────────────────────────────────────────────
 
   async onOffer({ fromId, offer }) {
+    if (this.localStatus === 'dnd') return; // Do Not Disturb: refuse incoming calls
     // Wait for media to settle instead of dropping the offer — this is the fix
     // for connections failing on first login until players walk apart & back.
     await this._mediaReadyPromise;

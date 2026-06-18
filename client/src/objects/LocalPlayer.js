@@ -40,6 +40,10 @@ export class LocalPlayer {
     }).setOrigin(0.5).setDepth(8.6); // above object layers, below the zone dimmer
   }
 
+  setStatus(status) {
+    this.nameTag.setText(status === 'dnd' ? `${this.name} · DND` : this.name);
+  }
+
   // Toggle dance mode (key press). Movement will clear it on the next update.
   toggleDance() { this.danceMode = !this.danceMode; }
 

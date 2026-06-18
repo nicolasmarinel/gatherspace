@@ -81,6 +81,7 @@ export class SocketManager {
     this.socket.on('player-left', (id) => this.scene.removeRemotePlayer(id));
 
     this.socket.on('waved', (d) => this.scene.onWaved?.(d));
+    this.socket.on('player-status', ({ id, status }) => this.scene.updateRemoteStatus?.(id, status));
 
     // WebRTC signaling passthrough
     this.socket.on('webrtc-offer',  (d) => this.scene.webRTC?.onOffer(d));
@@ -155,6 +156,7 @@ export class SocketManager {
   sendZoneLock(id, locked) { this.socket?.emit('map-zone-lock', { id, locked }); }
   sendZoneClaim(id, owner) { this.socket?.emit('map-zone-claim', { id, owner }); }
   sendWave(targetId)       { this.socket?.emit('wave', { targetId }); }
+  sendStatus(status)       { this.socket?.emit('set-status', { status }); }
   sendDM(to, text)         { this.socket?.emit('dm-send', { to, text }); }
   requestDMHistory(peer)   { this.socket?.emit('dm-history', { peer }); }
 

@@ -14,6 +14,7 @@ export class RemotePlayer {
     this.direction = 'down';
     this.isMoving = false;
     this.dancing = false;
+    this.status = 'available';
 
     this._custom = isCustomAvatar(this.avatarIndex) && !!customAt(this.avatarIndex);
     // add.sprite (not image) so custom avatars can play animations
@@ -24,6 +25,12 @@ export class RemotePlayer {
       fontSize: '11px', color: '#e2e8f0', fontFamily: 'monospace',
       backgroundColor: '#1a202caa', padding: { x: 4, y: 2 }
     }).setOrigin(0.5).setDepth(4.1);
+  }
+
+  setStatus(status) {
+    this.status = status === 'dnd' ? 'dnd' : 'available';
+    this.nameTag.setText(this.status === 'dnd' ? `${this.name} · DND` : this.name);
+    this.nameTag.setColor(this.status === 'dnd' ? '#fca5a5' : '#e2e8f0');
   }
 
   moveTo(x, y, direction, isMoving, dancing) {

@@ -252,6 +252,7 @@ io.on('connection', (socket) => {
     playerData = {
       id: socket.id, name: name || res.name, avatar, x, y,
       direction: 'down', isMoving: false, zone: null, sessionId: identity,
+      status: 'available',
     };
 
     if (!rooms.has(roomId)) rooms.set(roomId, new Map());
@@ -419,12 +420,21 @@ io.on('connection', (socket) => {
     if (prevZone != null && prevZone !== playerData.zone) releaseZoneIfEmpty(prevZone);
   });
 
+  // Set availability status: 'available' or 'dnd' (Do Not Disturb)
+  socket.on('set-status', ({ status }) => {
+    if (!currentRoom || !playerData) return;
+    playerData.status = status === 'dnd' ? 'dnd' : 'available';
+    io.to(currentRoom).emit('player-status', { id: socket.id, status: playerData.status });
+  });
+
   // Wave at another player: tell the whole room to show the wave emoji above the
   // target avatar; the target client also self-notifies (banner / chime / OS).
+  // A target in Do Not Disturb cannot be waved at.
   socket.on('wave', ({ targetId }) => {
     if (!currentRoom || !playerData) return;
     const room = rooms.get(currentRoom);
-    if (!room || !room.has(targetId)) return;
+    const target = room?.get(targetId);
+    if (!target || target.status === 'dnd') return;
     io.to(currentRoom).emit('waved', { fromId: socket.id, fromName: playerData.name, targetId });
   });
 
