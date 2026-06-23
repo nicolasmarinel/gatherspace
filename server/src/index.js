@@ -185,6 +185,33 @@ function saveDMs() {
 }
 const convKey = (a, b) => [a, b].sort().join('|');
 
+// ── post-it notes (private; visible only to author + recipient) ──────────────
+const POSTITS_FILE = path.join(DATA_DIR, 'postits.json');
+const postits = loadJson(POSTITS_FILE, {}); // id -> { id, from, fromName, to, text, x, y, ts }
+let nextPostitId = Object.keys(postits)
+  .reduce((mx, id) => Math.max(mx, parseInt(String(id).replace(/\D/g, ''), 10) || 0), 0) + 1;
+let postSaveT = null;
+function savePostits() {
+  if (postSaveT) return;
+  postSaveT = setTimeout(() => {
+    postSaveT = null;
+    try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(POSTITS_FILE, JSON.stringify(postits)); }
+    catch (e) { console.error('Save postits failed:', e.message); }
+  }, 1000);
+}
+// Deliver an event only to the given emails' sockets (privacy)
+function emitToEmails(emails, event, payload) {
+  const seen = new Set();
+  emails.forEach(em => onlineByEmail.get(em)?.forEach(sid => {
+    if (!seen.has(sid)) { seen.add(sid); io.to(sid).emit(event, payload); }
+  }));
+}
+// Claimed-zone owner at a world position (null if unclaimed / off-map)
+function tileOwnerAt(x, y) {
+  if (!mapState.dims || !mapState.tile) return null;
+  return ownerOfTile(Math.floor(x / mapState.tile), Math.floor(y / mapState.tile));
+}
+
 // Roster = allowlist ∪ everyone who has ever signed in, with live online flags
 function rosterPayload() {
   const emails = new Set([...ALLOWED_EMAILS, ...profiles.keys()]);
@@ -252,7 +279,7 @@ io.on('connection', (socket) => {
     playerData = {
       id: socket.id, name: name || res.name, avatar, x, y,
       direction: 'down', isMoving: false, zone: null, sessionId: identity,
-      status: 'available',
+      status: 'available', email: res.email || null,
     };
 
     if (!rooms.has(roomId)) rooms.set(roomId, new Map());
@@ -278,6 +305,8 @@ io.on('connection', (socket) => {
       if (!onlineByEmail.has(myEmail)) onlineByEmail.set(myEmail, new Set());
       onlineByEmail.get(myEmail).add(socket.id);
       broadcastPresence();
+      // Private post-its addressed to or authored by this user
+      socket.emit('postits', Object.values(postits).filter(n => n.to === myEmail || n.from === myEmail));
     } else {
       socket.emit('presence', rosterPayload());
     }
@@ -418,6 +447,48 @@ io.on('connection', (socket) => {
     socket.to(currentRoom).emit('player-moved', { id: socket.id, x, y, direction, isMoving, dancing, zone: playerData.zone });
     // Left a (locked) zone? Auto-unlock it if it's now empty.
     if (prevZone != null && prevZone !== playerData.zone) releaseZoneIfEmpty(prevZone);
+  });
+
+  // ── post-it notes ──
+  // Author drops a note on the recipient's claimed desk
+  socket.on('postit-place', ({ to, text, x, y }) => {
+    if (!myEmail || typeof to !== 'string') return;
+    const toEmail = to.toLowerCase();
+    if (tileOwnerAt(x, y) !== toEmail) return; // must land on the recipient's claimed area
+    const note = {
+      id: `p${nextPostitId++}`, from: myEmail,
+      fromName: profiles.get(myEmail)?.name || myEmail, to: toEmail,
+      text: String(text || '').slice(0, 500), x: Math.round(x), y: Math.round(y), ts: Date.now(),
+    };
+    postits[note.id] = note;
+    savePostits();
+    emitToEmails([note.from, note.to], 'postit-added', note);
+  });
+  // Author edits the text of their own note
+  socket.on('postit-update', ({ id, text }) => {
+    const note = postits[id];
+    if (!note || note.from !== myEmail) return;
+    note.text = String(text || '').slice(0, 500);
+    savePostits();
+    emitToEmails([note.from, note.to], 'postit-updated', { id, text: note.text });
+  });
+  // Reposition (recipient "keep", or author) — stays on the recipient's desk
+  socket.on('postit-move', ({ id, x, y }) => {
+    const note = postits[id];
+    if (!note || (myEmail !== note.to && myEmail !== note.from)) return;
+    if (tileOwnerAt(x, y) !== note.to) return;
+    note.x = Math.round(x); note.y = Math.round(y);
+    savePostits();
+    emitToEmails([note.from, note.to], 'postit-moved', { id, x: note.x, y: note.y });
+  });
+  // Discard (recipient) or delete (author)
+  socket.on('postit-delete', ({ id }) => {
+    const note = postits[id];
+    if (!note || (myEmail !== note.to && myEmail !== note.from)) return;
+    const targets = [note.from, note.to];
+    delete postits[id];
+    savePostits();
+    emitToEmails(targets, 'postit-removed', { id });
   });
 
   // Set availability status: 'available' or 'dnd' (Do Not Disturb)

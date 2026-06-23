@@ -83,6 +83,13 @@ export class SocketManager {
     this.socket.on('waved', (d) => this.scene.onWaved?.(d));
     this.socket.on('player-status', ({ id, status }) => this.scene.updateRemoteStatus?.(id, status));
 
+    // Private post-it notes
+    this.socket.on('postits',        (list) => this.scene.postits?.onPostits(list));
+    this.socket.on('postit-added',   (n)    => this.scene.postits?.onAdded(n));
+    this.socket.on('postit-updated', (d)    => this.scene.postits?.onUpdated(d));
+    this.socket.on('postit-moved',   (d)    => this.scene.postits?.onMoved(d));
+    this.socket.on('postit-removed', ({ id }) => this.scene.postits?.onRemoved(id));
+
     // WebRTC signaling passthrough
     this.socket.on('webrtc-offer',  (d) => this.scene.webRTC?.onOffer(d));
     this.socket.on('webrtc-answer', (d) => this.scene.webRTC?.onAnswer(d));
@@ -157,6 +164,10 @@ export class SocketManager {
   sendZoneClaim(id, owner) { this.socket?.emit('map-zone-claim', { id, owner }); }
   sendWave(targetId)       { this.socket?.emit('wave', { targetId }); }
   sendStatus(status)       { this.socket?.emit('set-status', { status }); }
+  sendPostitPlace(to, text, x, y) { this.socket?.emit('postit-place', { to, text, x, y }); }
+  sendPostitUpdate(id, text)      { this.socket?.emit('postit-update', { id, text }); }
+  sendPostitMove(id, x, y)        { this.socket?.emit('postit-move', { id, x, y }); }
+  sendPostitDelete(id)            { this.socket?.emit('postit-delete', { id }); }
   sendDM(to, text)         { this.socket?.emit('dm-send', { to, text }); }
   requestDMHistory(peer)   { this.socket?.emit('dm-history', { peer }); }
 

@@ -44,6 +44,8 @@ export class WebRTCManager {
     this.onSetPiPAuto = null;    // set by the scene; (on) => auto-enter PiP on focus
     this.onSetStatus = null;     // set by the scene; (status) => broadcast status
     this.localStatus = 'available'; // 'available' | 'dnd' — DND blocks calls/waves
+    this._panelOverride = null;  // 'online' to force the people view while in a zone
+    this._pomo = { mode: 'focus', remaining: 25 * 60, running: false, timer: null };
     // Presence + direct messages
     this._presence = [];                  // [{ email, name, picture, online }]
     this._dmThreads = new Map();          // peerEmail -> [{ from, text, ts }]
@@ -149,6 +151,7 @@ export class WebRTCManager {
       this._ctrlBtn('visibility', 'Hide self-view', 'self', () => this._toggleSelf()),
     ];
     if (this._canScreenShare) left.push(this._ctrlBtn('screen_share', 'Share screen', 'screen', () => this._toggleScreenShare()));
+    left.push(this._ctrlBtn('timer', 'Pomodoro timer', '', () => this._togglePomodoro()));
     left.push(this._ctrlBtn('settings', 'Settings', '', () => this._openSettings()));
 
     const spacer = mk('div', 'flex:1;');
@@ -1051,6 +1054,93 @@ export class WebRTCManager {
     this._settingsEl = null;
   }
 
+  // ── pomodoro timer ────────────────────────────────────────────────────────
+  // 25-min focus / 5-min break. The countdown keeps running while the panel is
+  // closed; reopening just re-renders the live state.
+  _pomoDur(mode) { return mode === 'focus' ? 25 * 60 : 5 * 60; }
+
+  _togglePomodoro() {
+    if (this._pomoEl) { this._pomoEl.remove(); this._pomoEl = null; return; }
+    const panel = mk('div', `
+      position:fixed; right:14px; bottom:64px; z-index:140; width:200px;
+      background:#1e293b; border:1px solid #334155; border-radius:14px; padding:16px;
+      font-family:monospace; color:#e2e8f0; box-shadow:0 10px 30px #0008;
+      display:flex; flex-direction:column; align-items:center; gap:10px;
+    `);
+    const mode = mk('div', 'font-size:11px; letter-spacing:.08em; color:#94a3b8;');
+    const time = mk('div', 'font-size:40px; font-weight:bold; font-variant-numeric:tabular-nums;');
+    const btns = mk('div', 'display:flex; gap:8px;');
+    const runBtn = this._pomoBtn('Start', () => this._pomoToggleRun());
+    btns.append(runBtn, this._pomoBtn('Skip', () => this._pomoSkip()), this._pomoBtn('Reset', () => this._pomoReset()));
+    panel.append(mode, time, btns);
+    document.body.appendChild(panel);
+    this._pomoEl = panel;
+    this._pomoModeEl = mode; this._pomoTimeEl = time; this._pomoRunBtn = runBtn;
+    this._renderPomo();
+  }
+
+  _pomoBtn(label, onClick) {
+    const b = mk('button', `
+      background:#334155; border:none; color:#e2e8f0; border-radius:8px;
+      padding:7px 10px; font-family:monospace; font-size:12px; cursor:pointer;`);
+    b.textContent = label;
+    b.addEventListener('mouseenter', () => b.style.background = '#475569');
+    b.addEventListener('mouseleave', () => b.style.background = '#334155');
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  _pomoToggleRun() {
+    this._pomo.running = !this._pomo.running;
+    if (this._pomo.running) {
+      if (!this._pomo.timer) this._pomo.timer = setInterval(() => this._pomoTick(), 1000);
+    } else if (this._pomo.timer) {
+      clearInterval(this._pomo.timer); this._pomo.timer = null;
+    }
+    this._renderPomo();
+  }
+
+  _pomoReset() {
+    this._pomo.running = false;
+    if (this._pomo.timer) { clearInterval(this._pomo.timer); this._pomo.timer = null; }
+    this._pomo.remaining = this._pomoDur(this._pomo.mode);
+    this._renderPomo();
+  }
+
+  _pomoSkip() {
+    this._pomo.mode = this._pomo.mode === 'focus' ? 'break' : 'focus';
+    this._pomo.remaining = this._pomoDur(this._pomo.mode);
+    this._renderPomo();
+  }
+
+  _pomoTick() {
+    this._pomo.remaining -= 1;
+    if (this._pomo.remaining <= 0) {
+      this._pomo.mode = this._pomo.mode === 'focus' ? 'break' : 'focus';
+      this._pomo.remaining = this._pomoDur(this._pomo.mode);
+      this._playChime();
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+          new Notification('🍅 Pomodoro', {
+            body: this._pomo.mode === 'focus' ? 'Break over — back to focus!' : 'Time for a break!',
+            tag: 'gs-pomo', renotify: true,
+          });
+        } catch { /* ignore */ }
+      }
+    }
+    this._renderPomo();
+  }
+
+  _renderPomo() {
+    if (!this._pomoEl) return;
+    const { mode, remaining, running } = this._pomo;
+    const m = Math.floor(remaining / 60), s = remaining % 60;
+    this._pomoTimeEl.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    this._pomoModeEl.textContent = mode === 'focus' ? '🍅 FOCUS' : '☕ BREAK';
+    this._pomoTimeEl.style.color = mode === 'focus' ? '#fca5a5' : '#86efac';
+    this._pomoRunBtn.textContent = running ? 'Pause' : 'Start';
+  }
+
   async _changeQuality(quality) {
     if (quality === this.currentQuality) return;
     const { w, h, fps } = VIDEO_QUALITIES[quality];
@@ -1140,7 +1230,16 @@ export class WebRTCManager {
     this._chatMinBtn.textContent = '+';
     this._chatMinBtn.title = 'Expand';
     this._chatMinBtn.addEventListener('click', () => this._toggleChatMinimize());
-    hdr.append(titleWrap, this._unreadBadge, this._dmBadge, this._chatMinBtn);
+    // Switch between the area/nearby chat and the people (online/DM) view
+    this._panelToggleBtn = mk('button', `
+      background:#334155; border:none; color:#e2e8f0; font-size:14px;
+      width:26px; height:26px; border-radius:6px; cursor:pointer; line-height:1; flex-shrink:0; display:none;
+    `);
+    this._panelToggleBtn.addEventListener('click', () => {
+      this._panelOverride = this._panelOverride === 'online' ? null : 'online';
+      this._updatePanelMode();
+    });
+    hdr.append(titleWrap, this._unreadBadge, this._dmBadge, this._panelToggleBtn, this._chatMinBtn);
 
     // Body holds the two views; minimizing hides the body, leaving the header.
     this._chatBody = mk('div', 'flex:1; min-height:0; display:flex; flex-direction:column;');
@@ -1302,19 +1401,36 @@ export class WebRTCManager {
   }
 
   _updatePanelMode() {
-    // The ephemeral "area" chat is shown whenever you're in a private zone OR
-    // near someone; otherwise the panel is the online/DM view.
-    const contextChat = !!this._zoneName || this._hasNearby();
-    if (this._nearbyView) this._nearbyView.style.display = contextChat ? 'flex' : 'none';
-    if (this._onlineView) this._onlineView.style.display = contextChat ? 'none' : 'flex';
-    this._updateHeaderTitle();
+    // The ephemeral "area"/nearby chat is available when you're in a private zone
+    // OR near someone; otherwise it's the online/DM view. While context chat is
+    // available, a header toggle lets you switch to the people view and back.
+    const contextAvailable = !!this._zoneName || this._hasNearby();
+    if (!contextAvailable) this._panelOverride = null;
+    const showContext = contextAvailable && this._panelOverride !== 'online';
+
+    if (this._nearbyView) this._nearbyView.style.display = showContext ? 'flex' : 'none';
+    if (this._onlineView) this._onlineView.style.display = showContext ? 'none' : 'flex';
+    if (this._panelToggleBtn) {
+      this._panelToggleBtn.style.display = contextAvailable ? 'inline-block' : 'none';
+      this._panelToggleBtn.textContent = showContext ? '👥' : '💬';
+      this._panelToggleBtn.title = showContext ? 'Show people & messages' : 'Back to area chat';
+    }
+    this._updateHeaderTitle(showContext);
   }
 
-  _updateHeaderTitle() {
+  _updateHeaderTitle(showContext) {
     if (!this._chatTitle) return;
-    this._chatTitle.textContent = this._zoneName
-      ? `🔒 ${this._zoneName}`
-      : (this._hasNearby() ? '💬 Nearby Chat' : '👥 Online');
+    if (!showContext) { this._chatTitle.textContent = '👥 Online'; return; }
+    this._chatTitle.textContent = this._zoneName ? `🔒 ${this._zoneName}` : '💬 Nearby Chat';
+  }
+
+  // Open a DM with a specific user from outside the panel (e.g. desk menu)
+  openDMExternal(email) {
+    if (!email) return;
+    this._panelOverride = 'online';
+    this._updatePanelMode();
+    if (this._chatMinimized) this._toggleChatMinimize();
+    this._openDM(email);
   }
 
   _toggleChatMinimize() {
@@ -2215,6 +2331,8 @@ export class WebRTCManager {
     this._audioCtx?.close?.();
     this._outCtx?.close?.();
     this._chimeCtx?.close?.();
+    if (this._pomo?.timer) clearInterval(this._pomo.timer);
+    this._pomoEl?.remove();
     this.localStream?.getTracks().forEach(t => t.stop());
     this._filmstrip?.remove();
     this._bar?.remove();

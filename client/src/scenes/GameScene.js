@@ -5,6 +5,7 @@ import { RemotePlayer } from '../objects/RemotePlayer.js';
 import { SocketManager } from '../managers/SocketManager.js';
 import { WebRTCManager } from '../managers/WebRTCManager.js';
 import { MapEditor } from '../MapEditor.js';
+import { PostitManager } from '../Postits.js';
 // import { PiPManager } from '../PiPManager.js'; // PiP disabled in deployment (kept for future use)
 
 // Avatars sit at layer 0 (depth ~LAYER_BASE). Objects render at
@@ -49,6 +50,7 @@ export class GameScene extends Phaser.Scene {
 
     this._buildWorld();
     this._createLocalPlayer();
+    this.postits = new PostitManager(this);
     this._setupSocket();
     this._setupWebRTC();
     this._setupCamera();
@@ -465,6 +467,7 @@ export class GameScene extends Phaser.Scene {
     }
     const rp = new RemotePlayer(this, data.id, data.x, data.y, data.avatar ?? 0, data.name);
     rp.sessionId = data.sessionId;
+    rp.email = (data.email || '').toLowerCase() || null;
     rp.zoneId = data.zone ?? null;
     if (data.status) rp.setStatus(data.status);
     this.remotePlayers.set(data.id, rp);
@@ -556,12 +559,13 @@ export class GameScene extends Phaser.Scene {
     cam.scrollY -= dy / cam.zoom;
   }
 
-  // Desktop: left-click drag pans the camera (right-click is reserved for waving)
+  // Desktop: left-click drag pans the camera (right-click is reserved for
+  // waving); a left-click without a drag interacts with the world (desk / note).
   _setupCameraDrag() {
     this.input.on('pointerdown', (pointer) => {
-      if (this.mapEditor?.active || pointer.wasTouch) return;
-      if (pointer.rightButtonDown()) return;
-      this._mouseDrag = { x: pointer.x, y: pointer.y };
+      if (this.mapEditor?.active || pointer.wasTouch || pointer.rightButtonDown()) return;
+      if (this.postits?.isPlacing()) return; // a click will place the note (handled on up)
+      this._mouseDrag = { x: pointer.x, y: pointer.y, moved: false };
     });
     this.input.on('pointermove', (pointer) => {
       if (!this._mouseDrag || this.mapEditor?.active || pointer.wasTouch) return;
@@ -569,10 +573,16 @@ export class GameScene extends Phaser.Scene {
       const dx = pointer.x - this._mouseDrag.x;
       const dy = pointer.y - this._mouseDrag.y;
       this._mouseDrag.x = pointer.x; this._mouseDrag.y = pointer.y;
+      if (Math.abs(dx) + Math.abs(dy) > 0) this._mouseDrag.moved = true;
       this._panBy(dx, dy);
     });
     this.input.on('pointerup', (pointer) => {
-      if (!pointer.wasTouch) this._mouseDrag = null;
+      if (pointer.wasTouch) return;
+      if (this.postits?.isPlacing()) { this.postits.tryPlaceAt(pointer.worldX, pointer.worldY); return; }
+      if (this._mouseDrag && !this._mouseDrag.moved) {
+        this._handleWorldTap(pointer.x, pointer.y, pointer.worldX, pointer.worldY);
+      }
+      this._mouseDrag = null;
     });
   }
 
@@ -681,7 +691,7 @@ export class GameScene extends Phaser.Scene {
       if (this.mapEditor?.active) return;
       const rp = this._remotePlayerAt(pointer.worldX, pointer.worldY);
       if (rp) this._showWaveMenu(pointer, rp);
-      else this._hideWaveMenu();
+      else this._hideContextMenu();
     });
   }
 
@@ -694,44 +704,99 @@ export class GameScene extends Phaser.Scene {
     return found;
   }
 
-  _showWaveMenu(pointer, rp) {
-    this._hideWaveMenu();
+  // Generic floating menu at a screen position. items: {label, disabled?, onClick}
+  _showContextMenu(sx, sy, items) {
+    this._hideContextMenu();
     const menu = document.createElement('div');
-    menu.style.cssText = `position:fixed; z-index:250; left:${pointer.x}px; top:${pointer.y}px;
+    menu.style.cssText = `position:fixed; z-index:250; left:${sx}px; top:${sy}px;
       background:#1e293b; border:1px solid #334155; border-radius:8px; padding:4px;
-      font-family:monospace; box-shadow:0 6px 20px #000a;`;
-    const btn = document.createElement('button');
-    const dnd = rp.status === 'dnd';
-    btn.textContent = dnd ? `⛔ ${rp.name} is in DND` : `👋 Wave to ${rp.name}`;
-    btn.style.cssText = `background:none; border:none; cursor:${dnd ? 'default' : 'pointer'};
-      color:${dnd ? '#94a3b8' : '#e2e8f0'};
-      font-size:13px; padding:8px 12px; border-radius:6px; white-space:nowrap; width:100%; text-align:left;`;
-    if (!dnd) {
-      btn.addEventListener('mouseenter', () => btn.style.background = '#334155');
-      btn.addEventListener('mouseleave', () => btn.style.background = 'none');
-      btn.addEventListener('click', () => { this.socket?.sendWave(rp.id); this._hideWaveMenu(); });
-    }
-    menu.appendChild(btn);
+      font-family:monospace; box-shadow:0 6px 20px #000a; min-width:150px;`;
+    items.forEach(it => {
+      const btn = document.createElement('button');
+      btn.textContent = it.label;
+      const dis = !!it.disabled;
+      btn.style.cssText = `display:block; width:100%; text-align:left; background:none; border:none;
+        color:${dis ? '#64748b' : '#e2e8f0'}; cursor:${dis ? 'default' : 'pointer'};
+        font-size:13px; padding:8px 12px; border-radius:6px; white-space:nowrap;`;
+      if (!dis) {
+        btn.addEventListener('mouseenter', () => btn.style.background = '#334155');
+        btn.addEventListener('mouseleave', () => btn.style.background = 'none');
+        btn.addEventListener('click', () => { this._hideContextMenu(); it.onClick(); });
+      }
+      menu.appendChild(btn);
+    });
     document.body.appendChild(menu);
-    this._waveMenu = menu;
+    this._ctxMenu = menu;
 
-    // Clamp inside the viewport
     const r = menu.getBoundingClientRect();
     if (r.right > window.innerWidth)  menu.style.left = `${window.innerWidth - r.width - 6}px`;
     if (r.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - r.height - 6}px`;
 
-    // Dismiss on the next interaction outside the menu
-    this._waveMenuDismiss = (e) => { if (this._waveMenu && !this._waveMenu.contains(e.target)) this._hideWaveMenu(); };
-    setTimeout(() => window.addEventListener('pointerdown', this._waveMenuDismiss, true), 0);
+    this._ctxDismiss = (e) => { if (this._ctxMenu && !this._ctxMenu.contains(e.target)) this._hideContextMenu(); };
+    setTimeout(() => window.addEventListener('pointerdown', this._ctxDismiss, true), 0);
   }
 
-  _hideWaveMenu() {
-    if (this._waveMenuDismiss) {
-      window.removeEventListener('pointerdown', this._waveMenuDismiss, true);
-      this._waveMenuDismiss = null;
+  _hideContextMenu() {
+    if (this._ctxDismiss) {
+      window.removeEventListener('pointerdown', this._ctxDismiss, true);
+      this._ctxDismiss = null;
     }
-    this._waveMenu?.remove();
-    this._waveMenu = null;
+    this._ctxMenu?.remove();
+    this._ctxMenu = null;
+  }
+
+  _showWaveMenu(pointer, rp) {
+    const dnd = rp.status === 'dnd';
+    this._showContextMenu(pointer.x, pointer.y, [{
+      label: dnd ? `⛔ ${rp.name} is in DND` : `👋 Wave to ${rp.name}`,
+      disabled: dnd,
+      onClick: () => this.socket?.sendWave(rp.id),
+    }]);
+  }
+
+  _findRemoteByEmail(email) {
+    let found = null;
+    this.remotePlayers.forEach((rp, id) => { if (rp.email && rp.email === email) found = { id, rp }; });
+    return found;
+  }
+
+  _ownerName(email) {
+    const u = this.webRTC?._presence?.find(p => p.email === email);
+    if (u) return u.name;
+    return this._findRemoteByEmail(email)?.rp.name || email;
+  }
+
+  // A claimed zone owned by someone other than me at this world point
+  _claimedDeskAt(wx, wy) {
+    const zid = this._zoneAt(wx, wy);
+    if (zid == null) return null;
+    const z = this._zoneById?.get(zid);
+    if (!z?.owner || z.owner === this._myEmail()) return null;
+    return z;
+  }
+
+  // Desk menu: wave / chat / leave a post-it for the desk's owner
+  _showDeskMenu(sx, sy, zone) {
+    const owner = zone.owner;
+    const name = this._ownerName(owner);
+    const r = this._findRemoteByEmail(owner);
+    const canWave = !!r && r.rp.status !== 'dnd';
+    this._showContextMenu(sx, sy, [
+      { label: canWave ? `👋 Wave to ${name}` : '👋 Wave (unavailable)', disabled: !canWave,
+        onClick: () => this.socket?.sendWave(r.id) },
+      { label: `💬 Chat with ${name}`, onClick: () => this.webRTC?.openDMExternal(owner) },
+      { label: '📝 Leave a post-it', onClick: () => this.postits?.startAuthoring(owner, name) },
+    ]);
+  }
+
+  // Routed from a click/tap on the world: placing > note > desk
+  _handleWorldTap(sx, sy, wx, wy) {
+    if (this.postits?.isPlacing()) { this.postits.tryPlaceAt(wx, wy); return true; }
+    const note = this.postits?.noteAt(wx, wy);
+    if (note) { this.postits.openNote(note.id); return true; }
+    const desk = this._claimedDeskAt(wx, wy);
+    if (desk) { this._showDeskMenu(sx, sy, desk); return true; }
+    return false;
   }
 
   _setupJoystick() {
@@ -745,12 +810,14 @@ export class GameScene extends Phaser.Scene {
 
     this.input.on('pointerdown', (ptr) => {
       if (this.mapEditor?.active || !ptr.wasTouch) return; // editor owns pointer input
+      if (this.postits?.isPlacing()) return; // a tap will place the note (handled on up)
 
       // Two fingers down → free-pan the map; cancel any joystick / pending tap
       if (this._downTouches().length >= 2) {
         this._joystick.active = false;
         this._joystickGfx.clear();
         this._tapCandidate = null;
+        this._worldTap = null;
         const [a, b] = this._downTouches();
         this._twoFinger = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
         return;
@@ -765,6 +832,9 @@ export class GameScene extends Phaser.Scene {
         return;
       }
 
+      // Otherwise track a possible tap on the world (desk / post-it), while still
+      // letting a drag drive the joystick.
+      this._worldTap = { id: ptr.id, x: ptr.x, y: ptr.y, t: this.time.now };
       this._joystick.active = true;
       this._joystick.pointerId = ptr.id;
       this._joystick.startX = ptr.x;
@@ -784,11 +854,14 @@ export class GameScene extends Phaser.Scene {
         this._twoFinger = { x: cx, y: cy };
         return;
       }
-      // Moved too far for a tap → it's a drag, not a wave
-      if (this._tapCandidate && ptr.id === this._tapCandidate.id) {
-        if (Math.hypot(ptr.x - this._tapCandidate.x, ptr.y - this._tapCandidate.y) > 12) {
-          this._tapCandidate = null;
-        }
+      // Moved too far for a tap → it's a drag, not a wave / world tap
+      if (this._tapCandidate && ptr.id === this._tapCandidate.id
+          && Math.hypot(ptr.x - this._tapCandidate.x, ptr.y - this._tapCandidate.y) > 12) {
+        this._tapCandidate = null;
+      }
+      if (this._worldTap && ptr.id === this._worldTap.id
+          && Math.hypot(ptr.x - this._worldTap.x, ptr.y - this._worldTap.y) > 12) {
+        this._worldTap = null;
       }
       if (!this._joystick.active || ptr.id !== this._joystick.pointerId) return;
       const MAX = 60;
@@ -803,12 +876,27 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerup', (ptr) => {
       if (this._twoFinger && this._downTouches().length < 2) this._twoFinger = null;
 
+      // Placing a post-it: a tap drops it
+      if (ptr.wasTouch && this.postits?.isPlacing()) {
+        this.postits.tryPlaceAt(ptr.worldX, ptr.worldY);
+        return;
+      }
+
       // Quick tap on an avatar (little movement, short hold) → open the wave menu
       const tc = this._tapCandidate;
       if (tc && ptr.id === tc.id) {
         this._tapCandidate = null;
         if (this.time.now - tc.t < 300 && Math.hypot(ptr.x - tc.x, ptr.y - tc.y) <= 12) {
           this._showWaveMenu(ptr, tc.rp);
+        }
+      }
+
+      // Quick tap elsewhere → world interaction (post-it / desk menu)
+      const wt = this._worldTap;
+      if (wt && ptr.id === wt.id) {
+        this._worldTap = null;
+        if (this.time.now - wt.t < 300 && Math.hypot(ptr.x - wt.x, ptr.y - wt.y) <= 12) {
+          this._handleWorldTap(ptr.x, ptr.y, ptr.worldX, ptr.worldY);
         }
       }
 
@@ -1021,7 +1109,8 @@ export class GameScene extends Phaser.Scene {
     this._zoomWidget?.remove();
     this.mapEditor?.destroy();
     this.pip?.destroy();
-    this._hideWaveMenu();
+    this.postits?.destroy();
+    this._hideContextMenu();
     this._waveEmojis?.forEach(w => w.txt.destroy());
   }
 }
